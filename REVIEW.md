@@ -1,15 +1,21 @@
 # REVIEW.md - dsh-tui-rewrite-working-tree
 
-- 范围：工作树。审查对象：`packages/dsh-tui-rewrite/`、`test-harness/`、`package.json`、`docs/`、`HANDOFF.md`
+- 范围：第二轮 —— `5e0fa5e..0ecbd33` 的插件增量（1b/1c：hover、滚轮、Home/End）及其记录；
+  工作树与 HEAD 一致。第一轮的审查对象是当时的整个工作树
+  （`packages/dsh-tui-rewrite/`、`test-harness/`、`package.json`、`docs/`、`HANDOFF.md`）
 - 审查者：AI 助手（DSH agent 会话）
-- 时间：2026-10-15 17:37（修复轮次 2026-10-15）
-- 状态：已完成
+- 时间：2026-10-15 22:40（第一轮 17:37 及其修复轮次；第二轮 1b/1c 增量；第二轮附真机验收）
+- 状态：已完成（R-001–R-018 全部关闭；**未发现功能缺陷**；真机 B1–B5 通过、1c 通过 6/7）
 
 ## 审查基准
 
 对照物：`docs/PLAN.md` 第 0 节不变式 C1–C8 与各阶段验收项、`docs/decisions/` 五份 ADR、
 `HANDOFF.md` 的七条硬约束，以及 `@deepseek-ai/dsh-session` 0.2.0-rc.2 与
 `@deepseek-harness-tui/dsh-tui` 0.15.0 的实际实现（读取本机安装副本源码，非注释推断）。
+
+第二轮（1b/1c 增量）额外核对的本机宿主源码：
+`lib/types/ink/events/input-event.js`、`ink/parse-keypress.js`、`ink/hit-test.js`、
+`ink/components/App.js`、`ink/ink.js`、`screens/Chat.js`、`dsh-adapter/channel-scene-outlet.js`。
 
 ## 修复轮次（2026-10-15）
 
@@ -37,6 +43,56 @@
 未覆盖：真机（无终端，未执行 `dst`）。阶段 1a 的 A1–A8 由用户于 2026-10-15 实测通过；
 1b/1c 的真机验收仍无记录，见 R-004 与 `docs/PLAN.md` 对应阶段。
 
+## 审查轮次（2026-10-15，1b/1c 增量）
+
+对象：`37b47bc`（hover、Home/End、滚轮改由选中项驱动）与 `0ecbd33`（记录指向该提交），
+以及同批的 `docs/PLAN.md` 1b/1c 一节、`docs/explore/phase1a-results.md` 第 6 节、
+`docs/tasks/20261015-142000-rewrite-exploration.md` 的状态更新。
+
+方法：逐行读增量差异；把每条新依赖的**宿主行为**回到本机安装副本的源码里核实（不靠注释推断）；
+再跑全量自动化。
+
+| 核对项 | 结论 | 证据 |
+|---|---|---|
+| `key.home` / `key.end` 在本机宿主确实存在 | 成立 | `lib/types/ink/events/input-event.js:15-16`（`home: keypress.name === 'home'`）；Windows VK 映射 `ink/parse-keypress.js:140-141`（VK_END/VK_HOME）；宿主自家组件同款用法 `screens/Launchpad.js:747`、`screens/Chat.js:4407` |
+| `userMessageBackgroundHover` 是合法主题色 | 成立 | 宿主多处用它做行 hover 底色：`components/design-system/ListItem.js:67`、`components/approvals/ApprovalPanel.js:199`；`guide/dsh-tui-guide/themes.md:118` 列在消息类色板里 |
+| 场景内的鼠标事件能到达插件节点 | 成立 | 场景渲染在 Chat 自己的树里（`screens/Chat.js:5537-5543`，非独立 root），hover 走 `hitTestWithOverlays`；滚轮由 `dispatchWheel` 从最深命中节点**向上冒泡**，容器上的 `onWheel` 收得到（`ink/hit-test.js:324-339`） |
+| "宿主不给被卸载节点发 leave" | 成立 | `ink/hit-test.js:507-523`：离开集合里先 `if (old.parentNode)` 才调 `onMouseLeave` |
+| `onMouseLeave` 的 `current === seq` 守卫是必要的 | 成立 | 宿主同一次指针移动先发 leave 再发 enter（同文件 507-535）；守卫写法与宿主自家一致（`components/questions/PlanReviewPanel.js:353`） |
+| "滚轮与视口跟随抢同一个 state" | 成立（数字口径见 R-018） | 用旧公式定点复算：选中第 0 行时 d=+3/+1/+20 全部被跟随 effect 回置到 0；选中第 10 行时 d=+3 保留为 3 |
+| hook 槽位纪律 | 成立 | `scene.js:243-290` 的全部 hook 在 `scene.js:448`、`scene.js:464` 的条件 return 之前；新增的 `hoverSeq` 追加在固定顺序中，未改变既有槽位含义 |
+| 镜像纪律（handler 只读镜像） | 成立 | 新增 Home/End 走 `move`(=`writeCaret`) 与两个纯函数，没有引入"渲染路径回写镜像"；hover 不进镜像的理由（无键位读指针）已写在模块注释 `scene.js:33-40` |
+| 声明文件与运行导出一致 | 成立 | `lineEndOf` 在 `scene.d.ts:42-46` 声明，`types.test.mjs` 的子路径集合比对通过 |
+| 自动化 | 91/91 通过；`npm run report` 5 项 RESULT 全 true | `npm test`、`npm run report` |
+
+观察（不判为问题）：`scene.js:517` 的 `onWheel` 用渲染态 `targets.length` 做夹取上界，
+是这条 handler 里唯一没走镜像的读。两者由同一条语句写入（`writeTargets`），且任何 state 变更都会先重渲染，
+取不到不同值；仅与文件自述的镜像纪律不同源，后续改动该段时建议换成 `mirrors.targets.current.length`。
+
+## 真机验收轮次（2026-10-15）
+
+本轮把 1b/1c 的验收项放进**真实 dsh-tui 进程**里跑（真实 profile + 已挂载的本插件 + 真实会话）。
+方法、原始证据与复现步骤见 [docs/explore/phase1b-1c-results.md](docs/explore/phase1b-1c-results.md)，
+这里只留结论与它对本审查的影响：
+
+| 项 | 结果 | 关键证据 |
+|---|---|---|
+| B1 键盘移动 + 高亮 | 通过 | 每次移动的字节差分：旧行重画为普通文本，新行带 \`38;2;213;81;127\` + \`48;2;243;215;224\` + \`1m\` |
+| B2 视口跟随 | 通过 | 14 行终端（可见 9 行）连按 10 次 \`j\`：窗口从 \`seq 16\` 滚到 \`seq 69\`，选中行始终可见 |
+| B3 点击选中 | 通过 | 宿主 \`dispatchClick {col:9,row:9,handled:true}\`，选中标记与底色落到该行 |
+| B4 滚轮步长 | 通过（纵向） | 一格 = 宿主 \`deltaY 3\` → 选中项 ±3 行；横向事件宿主报 \`deltaY 0\`，由 \`wheelRows\` 归零（单元测试锁定） |
+| B5 hover | 通过 | 指针移入/移出/换行时，\`48;2;240;220;230\`（主题 hover 色）落在**同一行**且随之撤销 |
+| C1/C3–C7 | 通过 | 真机提交了一次改写（\`rewrite appended targetSeq 16 eventSeq 349 chars 112\`），工件回放 C1–C6 硬不变式 **8/8** |
+| C2 | 部分 | 插入、\`Enter\` 换行、整段粘贴已确认；方向键/Home/End/退格**无法经 ConPTY 忠实投递**（conhost 把 VT 键序列拆成逐字符事件，宿主只看到孤立 ESC），待人工复核 |
+
+两条与本审查直接相关的结论：
+
+1. **R-017 的判断被真机证实**：hover 只在指针移动时更新，静止指针下不会重算（真机差分里
+   hover 底色由指针事件驱动，没有"提交后重算"的痕迹）。因此 B5 的判据必须写成
+   "移动指针后高亮指向指针所在行"。
+2. **R-018 涉及的滚轮行为在真机上确认**：一格 = 3 行，改为"移动选中项"后视口跟随生效；
+   记录里的旧数字按 R-018 订正。
+
 ## Active
 
 （无未关闭问题）
@@ -59,3 +115,5 @@
 - R-014 | Invalid | `package.json:6-13`、`test-harness/run.sh` | 假设「`npm test` 在 Windows 默认 shell 下因 glob 引号问题跑不起来」**不成立**：`npm test` 全绿，`pretest` 夹具构建正常，`npm run report` RESULT 全 true。HANDOFF 记载的两条入口（`bash test-harness/run.sh` 与 `npm test`）确认等价可用。 | 2026-10-15
 - R-015 | Accepted-risk | `packages/dsh-tui-rewrite/src/main.js:96-102`；`test-harness/test/plugin.test.mjs:163-170` | 插件卸载会让**已用过该投影的 live 会话**拒绝继续派生（实测 dispose 后 `deriveMessages()` 与 `surface.nodes` 均抛 `session message projection "dsh-tui-rewrite/message" was removed or replaced`）。判定为**已接受风险**而非缺陷：这是上游文档化的投影生命周期语义（`dsh-session/lib/index.js:577-582` 与 `registerMessageProjection` 的注释「Disposing the contribution makes sessions that used it refuse further derivation」），且 dsh-tui 的 `/reload` 只重读偏好文件、不重载插件（`lib/types/reload.d.ts`），进程内卸载在正常使用下不可达。留意：现有测试把「卸载即解绑」断言为期望行为，却未记录该后果，建议在该用例补一行注释指向本条风险。 | 2026-10-15
 - R-016 | Duplicate | `packages/dsh-tui-rewrite/src/projection.js:21` | 「未知事件类型缺少 `ignorable`，上游修正该闸门后存量日志会集体不可读」已由 ADR `docs/decisions/2026-10-15-event-type-namespace.md` 与 PLAN 风险表 R1 记录并接受（并已确认：`Session.append` 不提供 `ignorable` 参数，闸门目前是死代码，本插件依赖它「碰巧没生效」）。本次不重复开条目，仅确认该判断与上游源码一致。 | 2026-10-15
+- R-017 | Verified | `docs/PLAN.md`（1b 的 B5 措辞）、`test-harness/test/scene-render.test.mjs:748`（"hover follows the row, not the screen slot" 用例注释） | 修：两处文字改为与宿主实现一致——hover 只在**指针移动事件**里重算（`ink/components/App.js:876` → `ink/ink.js:2397 dispatchHover`；其余调用点只有 resize / 交替屏切换时的 `clearHovered`），静止指针下任何实现都拿不到指针位置，所以 B5 的判据写成"移动指针后高亮指向指针所在行"，用例注释也明确那次 `onMouseEnter()` 是手工模拟"下一次指针移动"。验证：真机差分显示 hover 底色完全由指针事件驱动（`c0→c1` 只有该行的 `48;2;240;220;230`），无"提交后重算"；`npm test` 91/91 | 2026-10-15
+- R-018 | Verified | `docs/explore/phase1a-results.md` §6.2 第 1 项、`docs/tasks/20261015-142000-rewrite-exploration.md`（同段转述） | 修：旧记录里的"滚一格 → `scroll` 先变 20"改成按真实一格（±3 行，`App.js:747`）与定点复算表述；"只要选中项不在视口内，滚轮一格都滚不动"改成"朝选中项所在边缘滚的那一步会被立刻回置、背离该边缘才留得住"，并附复算数据（选中 0 行时 `d=+3/+1/+20` 全回置 0；选中 10 行时 `d=+3` 保留 3；选中 25 行时 `d=-3` 回置 7）与订正说明；任务文件转述同步。验证：真机一格 = `deltaY 3` → 选中项 ±3 行、视口跟随生效 | 2026-10-15

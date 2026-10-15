@@ -746,10 +746,12 @@ test('the wheel scrolls the selection through the list, viewport following it', 
 });
 
 test('hover follows the row, not the screen slot, when the list scrolls under it', async () => {
-  // B5: the pointer does not move, but the rows under it do. The host re-runs
-  // its hit test after the commit and fires ENTER for whichever row now sits at
-  // that screen position; the row that left must not keep a highlight, and the
-  // newcomer must not inherit one from the slot it landed in.
+  // B5: the rows under a stationary pointer move. The host only re-evaluates
+  // hover on POINTER MOTION (dispatchHover hangs off App's mode-1003 branch;
+  // a commit does not re-run the hit test), so the enter below is dispatched by
+  // hand to stand for the next pointer event. What the state must guarantee in
+  // the meantime: the row that left does not keep a highlight, and the newcomer
+  // does not inherit one from the screen slot it landed in.
   const session = await sessionWithReplies(
     Array.from({ length: 40 }, (unused, index) => 'reply ' + index),
   );

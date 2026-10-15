@@ -1,9 +1,9 @@
 # 20261015-142000-rewrite-exploration - 初期探索：需求边界与开发路径
 
-- 状态：进行中（阶段 0、1a 已完成，代码审查 11 条未关闭问题已全部关闭；
-  **1b/1c 实现已完整**，只剩这两阶段的**真机验收**）
+- 状态：进行中（阶段 0、1a 已完成；1b **真机验收通过**；1c 真机通过 6/7，
+  **只剩 C2 的方向键/Home/End/退格待人工复核**；审查记录见 REVIEW.md）
 - 负责人：DSH agent 会话（2026-10-15）
-- 更新时间：2026-10-15 19:15 +0800
+- 更新时间：2026-10-15 22:40 +0800
 - 来源：用户请求「阅读 HANDOFF.md，进行初期探索，明确需求和发展路径」；上源 `C:/Users/86198/dsh-rewrite-poc/HANDOFF.md`
 - 工作位置：`D:/dsh-tui-rewrite`（`git init` 已完成；基线提交 `6f706e4` 已于 2026-10-15 落地，此前「无提交不可回退」的风险已消除）
 
@@ -77,19 +77,25 @@
   （修复轮次 81 项 → 本次 +10）。细节与实现取舍见
   [docs/explore/phase1a-results.md](../explore/phase1a-results.md) 第 6 节，不在本文件复制。
   两条值得单记的事实：
-  1. **滚轮此前完全无效**：滚轮与「视口跟随选中项」争同一个 `scroll`，
-     选中项一旦不在视口内，滚一格就被重置回 0（实测 20 → 0）。已改为滚轮移动选中项。
+  1. **滚轮与「视口跟随选中项」争同一个 `scroll`**：朝选中项所在边缘滚的那一步会被立刻
+     回置（新开列表选中第 0 行时向下滚正是这一类；定点复算见 phase1a-results 6.2，数字已按
+     REVIEW.md R-018 订正）。已改为滚轮移动选中项。
   2. **测试运行时自身失真**：模拟 hook 运行时的 `useInput` 累加 handler、
      `useState` 每次新建 setter，都会让「实现正确、测出来错误」。已按 React 语义修正。
-- 下一步：**只差真机**。`node test-harness/mount.mjs` → `dst` → 按 `PLAN.md` 第 4 节清单
-  逐条走 B1–B5 与 C1–C7（1c 必须真的提交一次，核 `rewrite appended` 与派生回读），
-  结果记入 `docs/explore/`；结束务必 `unmount.mjs` 回滚。
-  未完成前 1b/1c 的验收复选框保持未勾（实现完成 ≠ 阶段收尾）。
-  见 [docs/PLAN.md](../PLAN.md) 阶段 1b/1c。
-- 真机挂载：**已回滚**（2026-10-15 17:27，`node test-harness/unmount.mjs`）——
-  junction 与 patch 行均已移除，`dsh --profile dsh-tui --dump-config` 中不再出现本插件行，
-  patch 仍可正常组合。挂载前的备份 `cordis.patch.yml.bak-rewrite-mount-*` 保留。
-  下一轮 1b 真机验证前重新 `node test-harness/mount.mjs` 即可（幂等）。
+- **1b/1c 真机验收（2026-10-15，第二轮会话）**：用自建 ConPTY 宿主在真实 dsh-tui 进程内
+  跑完 B1–B5 与 C1、C3–C7，并真的提交了一次改写（`rewrite appended targetSeq 16 eventSeq 349`），
+  工件回放 C1–C6 硬不变式 8/8。完整现场证据、复现方法、方法与坑见
+  [docs/explore/phase1b-1c-results.md](../explore/phase1b-1c-results.md)，不在本文件复制。
+  两条必须记住的操作规则（同文第 5 节）：**夹具会话一律放独立 DSH_HOME**（把身份不自洽的
+  会话塞进真实库会让 dsh-workspace 启动即抛错、TUI 起不来）；**helper 进程按 PID 杀**
+  （`taskkill /IM node.exe` 会连宿主一起杀）。
+- 下一步：**只剩 C2 的按键分支人工复核**（方向键 / Home / End / 退格：ConPTY 注入无法忠实
+  投递 ESC 前缀按键，需在真实终端里走一遍）。其余阶段收尾项见
+  [docs/PLAN.md](../docs/PLAN.md) 第 4 节。
+- 真机挂载：**当前为已挂载状态**（2026-10-15 第二轮，`node test-harness/mount.mjs`）——
+  junction + patch 行均在位，`dsh --profile dsh-tui --dump-config` 含本插件行，
+  真实 `~/.dsh` 未被夹具写入（前后 slug 数一致）。回滚命令 `node test-harness/unmount.mjs`；
+  挂载前备份 `cordis.patch.yml.bak-rewrite-mount-2026-10-15T12-54-46-488Z` 保留。
 - 阶段划分、验收标准、测试策略与风险登记已独立成 [docs/PLAN.md](../PLAN.md)；
   架构决策见 [docs/decisions/](../decisions/)。本文件保留为本次探索的任务记录。
 

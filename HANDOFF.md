@@ -47,7 +47,7 @@ TUI 状态与日志
 ## 操作入口
 
 ```bash
-# 全部 headless 验证（73 项）
+# 全部 headless 验证（91 项）
 bash test-harness/run.sh          # 等价：npm test
 
 # 可读的端到端契约报告
@@ -70,6 +70,34 @@ dst
 
 **真机验证一律用 `dst`**。原因与已排除项见
 `docs/decisions/2026-10-15-dst-for-ondevice-verification.md`。
+
+## 真机验证（无终端环境下怎么做）
+
+本机 agent 会话没有交互终端，而 `dst` 拒绝非 TTY、`winpty` 在管道 stdout 下断言失败。
+2026-10-15 起改用**自建 ConPTY 宿主**，在真实 dsh-tui 进程里跑完整验收：
+
+```
+D:/dsh-tui-rewrite-onddev/tools/ptyrun.exe   ConPTY 宿主（C，mingw 编译；仓库外）
+D:/dsh-tui-rewrite-onddev/tools/driver.mjs   按键/SGR 鼠标脚本 + 每步累计字节流
+D:/dsh-tui-rewrite-onddev/tools/analyze.mjs  原始流回放成屏幕（含 SGR 属性）
+D:/dsh-tui-rewrite-onddev/tools/showdelta.mjs 两帧差分 = 该动作实际画了什么
+```
+
+四条必须遵守的规则（踩过的坑，详见
+[docs/explore/phase1b-1c-results.md](docs/explore/phase1b-1c-results.md)）：
+
+1. **夹具会话放独立 `DSH_HOME`**（`profiles/dsh-tui` 用 junction 指回真实 profile，
+   `sessions/` 用本地目录 + 真实会话的字节拷贝）。**绝不要**把身份不自洽的会话
+   （目录 id/slug 与 header 不符）放进真实会话库：dsh-workspace 启动时扫全库，一份不健康
+   就让插件激活失败、TUI 永远停在 `waiting for service: workspaceRegistry`。
+2. **给足颜色**：工具 shell 的 `TERM=dumb`/`NO_COLOR=1` 会被 TUI 继承，样式全被丢掉
+   （hover/选中"看起来失效"）。跑真机统一加
+   `env -u NO_COLOR FORCE_COLOR=3 COLORTERM=truecolor TERM=xterm-256color`。
+3. **按键注入的边界**：字母、`Enter`、`Ctrl+S`、SGR 鼠标事件忠实到达；
+   **ESC 前缀的方向键 / Home / End 不能**（conhost 把 VT 键序列拆成逐字符控制台事件，
+   宿主只看到孤立 ESC）。这类键位要人工在真实终端复核。
+4. **按 PID 杀进程**：`taskkill /IM node.exe` 会连宿主一起杀掉；只对自建进程树用
+   `taskkill /PID <pid> /T /F`。
 
 ## 硬约束（改代码前先读）
 
