@@ -16,12 +16,15 @@
       "default": "./src/projection.js"
     },
     "./scene": {
+      "types": "./src/scene.d.ts",
       "default": "./src/scene.js"
     },
     "./debug": {
+      "types": "./src/debug.d.ts",
       "default": "./src/debug.js"
     },
     "./seam": {
+      "types": "./src/seam.d.ts",
       "default": "./src/seam.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
