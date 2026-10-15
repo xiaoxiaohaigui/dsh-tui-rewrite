@@ -172,7 +172,9 @@ export async function openSession(specs = [], options = {}) {
     root,
     store: root.sessions,
     session,
-    dispose: async () => { await root.dispose(); },
+    // The store fiber is owned by the root context; a test that outlives its
+    // session only has to settle. Kept as the suite's teardown hook.
+    dispose: async () => { await settle(); },
   };
 }
 

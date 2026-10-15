@@ -20,7 +20,7 @@ import { Context } from '@deepseek-ai/cordis';
 import { SessionStore, KNOWN_SESSION_EVENT_TYPES } from '@deepseek-ai/dsh-session';
 import pluginDefault, { name as pluginName, inject as pluginInject, projectionStatus } from 'dsh-tui-rewrite';
 import { REWRITE_EVENT_TYPE } from 'dsh-tui-rewrite/projection';
-import { loadSampleSession, textOf } from '../tools.mjs';
+import { loadSampleSession, openSession, textOf } from '../tools.mjs';
 
 const settle = (ms = 25) => new Promise(resolve => setTimeout(resolve, ms));
 // The default export IS the mounted plugin (name + inject + apply).
@@ -52,6 +52,51 @@ async function boot() {
   await settle();
   return { root, host };
 }
+
+test('a malformed rewrite event degrades to a skip instead of stranding the session', async () => {
+  // A projection that throws is not a degraded rewrite: it runs inside the
+  // surface fold, which a session ALSO runs while validating its seed, and
+  // dsh-session's repair channel does not cover projection events. One bad
+  // event - from a fork, a windowed replay, an older build, another tool, or a
+  // hand-edited log - would make that session impossible to open, forever.
+  const { rewriteSkips, resetRewriteSkips } = await import('dsh-tui-rewrite/projection');
+  const { session } = await openSession([
+    {
+      type: 'assistant/message',
+      surfaceOp: 'append',
+      data: {
+        turn: 0,
+        step: 0,
+        stream: [],
+        message: {
+          id: 'msg-0',
+          role: 'assistant',
+          source: { kind: 'model', provider: 'harness', model: 'harness' },
+          content: [{ type: 'text', text: 'ORIGINAL' }],
+        },
+      },
+    },
+    // No event lives at seq 99, which is what a bad window offset looks like.
+    { type: REWRITE_EVENT_TYPE, data: { targetSeq: 99, content: 'NEVER LANDS' } },
+    { type: REWRITE_EVENT_TYPE, data: { targetSeq: 'nope', content: 'NEITHER' } },
+    { type: REWRITE_EVENT_TYPE, data: { targetSeq: 0, content: 42 } },
+  ], { plugin: true });
+
+  // Opening the session at all is the assertion: before, create() threw
+  // "invalid seed event at index 1: dsh-tui-rewrite/message: no event at seq 99".
+  assert.equal(session.surface.nodes.length, 1);
+  assert.equal(textOf(session.deriveMessages()[0]), 'ORIGINAL', 'a skipped rewrite leaves the original in place');
+
+  // And the skips are reported rather than silently absorbed.
+  resetRewriteSkips();
+  session.append(REWRITE_EVENT_TYPE, { targetSeq: 99, content: 'LATER BAD EVENT' });
+  assert.equal(textOf(session.deriveMessages()[0]), 'ORIGINAL');
+  assert.deepEqual(rewriteSkips(), [{ reason: 'no-target-event', count: 1 }]);
+
+  // A good event still lands, even after bad ones.
+  session.append(REWRITE_EVENT_TYPE, { targetSeq: 0, content: 'GOOD' });
+  assert.equal(textOf(session.deriveMessages()[0]), 'GOOD');
+});
 
 test('the rewrite event type is outside the core vocabulary', () => {
   // Third-party events are unknown to core on purpose; the persistence path

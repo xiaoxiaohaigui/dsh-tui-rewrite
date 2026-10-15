@@ -27,7 +27,7 @@
  *
  * @module dsh-tui-rewrite
  */
-import { REWRITE_EVENT_TYPE, rewriteProjection } from './projection.js';
+import { REWRITE_EVENT_TYPE, rewriteProjection, setProjectionDiagnostics, rewriteSkips } from './projection.js';
 import { SCENE_ID, RewriteScene, setSessionResolver } from './scene.js';
 import { registerSeamWithRetry, whenSeamMounted } from './seam.js';
 import { debugLog, debugEnabled } from './debug.js';
@@ -78,6 +78,13 @@ function logSafely(ctx, level, message) {
  * @param {import('@deepseek-ai/cordis').Context} ctx - plugin context.
  */
 function registerProjection(ctx) {
+  // A skipped rewrite is invisible to the user (the original text just stays),
+  // so the projection reports it through here. Installed even when registration
+  // is refused: the two failures are independent.
+  setProjectionDiagnostics(message => {
+    logSafely(ctx, 'warn', name + ': ' + message);
+    debugLog('rewrite skipped', { reason: message });
+  });
   ctx.effect(() => {
     let dispose;
     try {
@@ -233,7 +240,7 @@ function reportLateMountState(ctx) {
     if (state.shortcut) seen.shortcut = true;
     if (seen.scene && seen.command && seen.shortcut) {
       clearInterval(timer);
-      debugLog('entry points verified', seen);
+      debugLog('entry points verified', { ...seen, rewritesSkipped: rewriteSkips() });
     }
   }, 250);
   // Bounded: an entry point that never lands is a real failure and must not
