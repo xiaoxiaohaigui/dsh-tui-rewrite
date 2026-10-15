@@ -152,22 +152,37 @@ export function rowOf(chars, cursor) {
  * A stdin chunk can deliver several keys before React re-renders, so a handler
  * that read state directly would act on stale values (the reference
  * implementation documents this as the source of "one key moves two rows"
- * bugs). The mirrors are a ref OBJECT created once, so binding them is a plain
- * assignment on every render - no hook runs conditionally, and no state edit
- * has to remember to update a second variable.
+ * bugs). The mirrors are a ref OBJECT created once.
+ *
+ * The handler is the ONLY writer of these mirrors, and every state edit goes
+ * through a setter that writes the mirror in the same statement. Nothing in the
+ * render path may re-sync them from state: React commits state updates
+ * asynchronously, so a render triggered mid-chunk carries the PREVIOUS state
+ * and would reset the mirror to it - dropping every key of the chunk (the
+ * "cancel then Ctrl+S still submits" defect). `useRef` is what makes the
+ * object outlive a discarded render, which `useMemo` does not promise.
  *
  * @param {typeof import('react')} React - the injected host React.
  * @returns {Record<string, {current: unknown}>} - one stable ref per mirror.
  */
 export function useMirrorRefs(React) {
-  const { useMemo } = React;
-  return useMemo(() => ({
-    mode: { current: 'list' },
+  const { useRef, useMemo } = React;
+  // useMemo is the fallback for a host React that does not expose useRef; the
+  // hook count stays at one either way, so the slots do not shift.
+  if (typeof useRef !== 'function') {
+    return useMemo(() => makeMirrors(), []);
+  }
+  return useRef(makeMirrors()).current;
+}
+
+/** The initial mirror set: one stable ref object per value the handler reads. */
+function makeMirrors() {
+  return {
     selected: { current: 0 },
     draft: { current: undefined },
     caret: { current: 0 },
     targets: { current: [] },
-  }), []);
+  };
 }
 
 /** Signed rows one wheel notch asks for; 0 for a horizontal-only event. */
@@ -200,12 +215,9 @@ export function RewriteScene(props) {
   const [caret, setCaret] = useState(0);
 
   // Mirrors for the input handler, which can run several times per stdin chunk.
+  // The handler writes them; the render path must NOT re-sync them from state
+  // (see useMirrorRefs). The setter wrappers below are the only writers.
   const mirrors = useMirrorRefs(React);
-  mirrors.mode.current = draft === undefined ? 'list' : 'edit';
-  mirrors.selected.current = selected;
-  mirrors.draft.current = draft;
-  mirrors.caret.current = caret;
-  mirrors.targets.current = targets;
 
   const bodyRows = Math.max(1, (size.rows ?? 24) - 5);
 
@@ -219,15 +231,49 @@ export function RewriteScene(props) {
     });
   }, []);
 
+  const choose = useCallback(index => {
+    mirrors.selected.current = index;
+    setSelected(index);
+  }, []);
+
+  const writeDraft = useCallback(text => {
+    mirrors.draft.current = text;
+    setDraft(text);
+  }, []);
+
+  const writeCaret = useCallback(at => {
+    mirrors.caret.current = at;
+    setCaret(at);
+  }, []);
+
+  const writeTargets = useCallback(found => {
+    mirrors.targets.current = found;
+    setTargets(found);
+  }, []);
+
+  /**
+   * Leave the editor. The draft mirror IS the mode switch, so it clears here
+   * too - a handler that runs again in the same chunk must already read "list".
+   *
+   * @param {string | ((current: string) => string)} [next] - status to show.
+   */
+  const leaveEdit = useCallback(next => {
+    mirrors.draft.current = undefined;
+    mirrors.caret.current = 0;
+    setDraft(undefined);
+    setCaret(0);
+    if (next !== undefined) setStatus(next);
+  }, []);
+
   // The scene can outlive the session it was opened on (a switch or a rewind);
   // re-enumerate rather than showing another session's rows.
   useEffect(() => {
     const found = collectTargets(session);
-    setTargets(found);
-    setSelected(current => Math.max(0, Math.min(current, found.length - 1)));
+    writeTargets(found);
+    choose(Math.max(0, Math.min(mirrors.selected.current, found.length - 1)));
     setScroll(0);
     debugLog('targets enumerated', { sessionId: channel?.sessionId, targets: found.length });
-  }, [session]);
+  }, [session, writeTargets, choose, mirrors]);
 
   /** Append the rewrite for the selected target. */
   const submit = useCallback(() => {
@@ -235,37 +281,38 @@ export function RewriteScene(props) {
     const target = mirrors.targets.current[mirrors.selected.current];
     if (text === undefined || target === undefined || session === undefined) return;
     if (text === target.original) {
-      setStatus('unchanged — nothing appended');
-      setDraft(undefined);
+      leaveEdit('unchanged — nothing appended');
       return;
     }
     try {
       const event = session.append(REWRITE_EVENT_TYPE, { targetSeq: target.seq, content: text });
       debugLog('rewrite appended', { targetSeq: target.seq, eventSeq: event.seq, chars: units(text).length });
-      setStatus('rewrote seq ' + target.seq + ' — the model sees the new text, the log keeps the original');
-      setTargets(collectTargets(session));
+      leaveEdit('rewrote seq ' + target.seq + ' — the model sees the new text, the log keeps the original');
+      writeTargets(collectTargets(session));
     } catch (error) {
       debugLog('append threw', { targetSeq: target.seq, error: String(error) });
-      setStatus('append failed: ' + String(error).slice(0, 70));
+      leaveEdit('append failed: ' + String(error).slice(0, 70));
     }
-    setDraft(undefined);
-  }, [session]);
+  }, [session, leaveEdit, writeTargets]);
 
   const beginEdit = useCallback(target => {
     if (target === undefined) return;
-    mirrors.caret.current = units(target.original).length;
-    setCaret(mirrors.caret.current);
-    setDraft(target.original);
+    writeCaret(units(target.original).length);
+    writeDraft(target.original);
     setStatus('');
-  }, []);
+  }, [writeCaret, writeDraft]);
 
   useInput((input, key) => {
-    if (mirrors.mode.current === 'edit') {
+    // The draft mirror IS the mode switch: it is written by the same statement
+    // that enters or leaves the editor, so a second key of the same chunk sees
+    // the transition immediately. A separate "mode" mirror was a second account
+    // of the same fact and could disagree with it.
+    if (mirrors.draft.current !== undefined) {
       const chars = units(mirrors.draft.current ?? '');
       const cursor = Math.min(mirrors.caret.current, chars.length);
-      const move = next => { mirrors.caret.current = next; setCaret(next); };
+      const move = writeCaret;
 
-      if (key.escape) { setDraft(undefined); setStatus('edit cancelled'); return; }
+      if (key.escape) { leaveEdit(current => (current === '' ? 'edit cancelled' : current)); return; }
       if (key.ctrl && input === 's') { submit(); return; }
       if (key.leftArrow) { move(Math.max(0, cursor - 1)); return; }
       if (key.rightArrow) { move(Math.min(chars.length, cursor + 1)); return; }
@@ -290,13 +337,13 @@ export function RewriteScene(props) {
         return;
       }
       if (key.return || input === '\n' || input === '\r') {
-        setDraft([...chars.slice(0, cursor), '\n', ...chars.slice(cursor)].join(''));
+        writeDraft([...chars.slice(0, cursor), '\n', ...chars.slice(cursor)].join(''));
         move(cursor + 1);
         return;
       }
       if (key.backspace || key.delete) {
         if (cursor === 0) return;
-        setDraft([...chars.slice(0, cursor - 1), ...chars.slice(cursor)].join(''));
+        writeDraft([...chars.slice(0, cursor - 1), ...chars.slice(cursor)].join(''));
         move(cursor - 1);
         return;
       }
@@ -305,7 +352,7 @@ export function RewriteScene(props) {
       // A paste arrives as ONE multi-character input; insert it whole, or the
       // rest of the pasted text is silently dropped.
       const pasted = units(input);
-      setDraft([...chars.slice(0, cursor), ...pasted, ...chars.slice(cursor)].join(''));
+      writeDraft([...chars.slice(0, cursor), ...pasted, ...chars.slice(cursor)].join(''));
       move(cursor + pasted.length);
       return;
     }
@@ -315,9 +362,7 @@ export function RewriteScene(props) {
     if (key.ctrl && input === 's') { beginEdit(mirrors.targets.current[mirrors.selected.current]); return; }
     if (mirrors.targets.current.length === 0) return;
     const step = delta => {
-      const next = Math.max(0, Math.min(mirrors.targets.current.length - 1, mirrors.selected.current + delta));
-      mirrors.selected.current = next;
-      setSelected(next);
+      choose(Math.max(0, Math.min(mirrors.targets.current.length - 1, mirrors.selected.current + delta)));
     };
     if (key.upArrow || input === 'k') step(-1);
     else if (key.downArrow || input === 'j') step(1);
@@ -405,7 +450,7 @@ export function RewriteScene(props) {
               flexDirection: 'column',
               flexShrink: 0,
               ...(isSelected ? { backgroundColor: 'selectionBg' } : {}),
-              onClick: () => { mirrors.selected.current = index; setSelected(index); },
+              onClick: () => choose(index),
               children: jsx(Text, {
                 bold: isSelected,
                 ...(isSelected ? { color: 'suggestion' } : {}),

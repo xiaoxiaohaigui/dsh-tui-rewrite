@@ -56,6 +56,17 @@ function makeRenderer() {
   let committed = [];
   let cursor = 0;
   let closed = false;
+  // Memoized hooks get their OWN counter: they must advance the shared hook
+  // cursor (React matches hooks by call order) but their cache cannot share the
+  // state array, or a useRef and a useCallback at different positions collide.
+  // An un-memoized useCallback returns a NEW function every render, which makes
+  // any effect listing it as a dependency re-fire forever.
+  let memoCursor = 0;
+  const memoSlot = () => {
+    cursor += 1;
+    memoCursor += 1;
+    return memoCursor - 1;
+  };
   const React = {
     useState: initial => {
       const slot = cursor;
@@ -64,15 +75,22 @@ function makeRenderer() {
       const set = next => { state[slot].value = typeof next === 'function' ? next(state[slot].value) : next; };
       return [state[slot].value, set];
     },
-    // No dependency tracking: the scene's memo has an empty list by design.
     useMemo: (factory, deps) => {
-      const slot = cursor;
-      cursor += 1;
+      const slot = memoSlot();
       memos[slot] ??= { value: factory(), deps };
       return memos[slot].value;
     },
     useEffect: (fn, deps) => { pending.push({ fn, deps }); },
-    useCallback: fn => fn,
+    useCallback: (fn, deps) => {
+      const slot = memoSlot();
+      const held = memos[slot];
+      const stable = held !== undefined && deps !== undefined && held.deps !== undefined
+        && deps.length === held.deps.length
+        && deps.every((dep, index) => Object.is(dep, held.deps[index]));
+      if (stable) return held.value;
+      memos[slot] = { value: fn, deps };
+      return fn;
+    },
   };
   const ui = {
     Box: 'Box',
@@ -82,6 +100,7 @@ function makeRenderer() {
   };
   const pass = channel => {
     cursor = 0;
+    memoCursor = 0;
     pending.length = 0;
     const tree = RewriteScene({
       React,
@@ -118,6 +137,27 @@ function makeRenderer() {
     return dirty ? render(channel) : view;
   };
   return { render, effects: () => committed, inputs, isClosed: () => closed };
+}
+
+/**
+ * Drive the scene's input handler, which no other suite touches.
+ *
+ * The handler is where React batching bites: one stdin chunk delivers several
+ * parsed keys before a re-render, so a handler that reads stale state loses
+ * keys. These cases call `inputs[0]` directly, with no render in between -
+ * exactly the shape of one chunk.
+ */
+function press(runtime, input, extra = {}) {
+  runtime.inputs[0](input, {
+    escape: false, ctrl: false, meta: false, super: false,
+    leftArrow: false, rightArrow: false, upArrow: false, downArrow: false,
+    return: false, backspace: false, delete: false, ...extra,
+  });
+}
+
+/** The edit pane's caret line, i.e. what the user is actually typing into. */
+function caretLine(view) {
+  return view.text.split('\n').find(line => line.includes('▏'));
 }
 
 test('the scene paints one row per assistant reply, from the resolver session', async () => {
@@ -233,7 +273,7 @@ test('the list re-enumerates when the resolver starts answering for the bound id
   assert.equal(view.rows.length, 1);
   assert.ok(view.text.includes('late arrival'));
   assert.ok(
-    effects().some(effect => effect.deps?.length === 1 && effect.deps[0] === session),
+    effects().some(effect => effect.deps?.includes(session)),
     'expected an effect keyed on the resolved session',
   );
 });
@@ -246,6 +286,88 @@ test('the scene id is the kebab-case token the scene registry accepts', () => {
 test('collectTargets enumerates nothing when a session has no nodes', async () => {
   const { session } = await openSession([]);
   assert.deepEqual(collectTargets(session), []);
+});
+
+test('two keys in ONE chunk both land in the draft (React batches a chunk)', async () => {
+  // One stdin chunk is one batch: the handler runs for every parsed key before
+  // any re-render. A handler that read React state directly would see the same
+  // pre-chunk snapshot twice and drop the first key - the "lost keystroke" bug
+  // the mirror discipline exists to prevent.
+  const session = await sessionWithReplies(['HELLO']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  runtime.render({ sessionId: 's1' });
+
+  press(runtime, '', { return: true });   // Enter starts the edit
+  press(runtime, 'X');
+  press(runtime, 'Y');                    // same chunk: no render in between
+
+  assert.match(caretLine(runtime.render({ sessionId: 's1' })), /HELLOXY/u);
+});
+
+test('a multi-character paste in one chunk survives whole', async () => {
+  const session = await sessionWithReplies(['HELLO']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  runtime.render({ sessionId: 's1' });
+
+  press(runtime, '', { return: true });
+  press(runtime, 'XYZ');                  // a paste is one multi-char input
+
+  assert.match(caretLine(runtime.render({ sessionId: 's1' })), /HELLOXYZ/u);
+});
+
+test('Esc then Ctrl+S in ONE chunk does not append the cancelled draft', async () => {
+  // Esc must win for the rest of the chunk. Reading the render-time mirror left
+  // the handler in "edit" mode with the old draft, so the very next key of the
+  // same chunk submitted text the user had just cancelled.
+  const session = await sessionWithReplies(['HELLO']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  runtime.render({ sessionId: 's1' });
+
+  press(runtime, '', { return: true });
+  press(runtime, 'Z');
+  runtime.render({ sessionId: 's1' });     // the edit is on screen
+  press(runtime, '', { escape: true });    // cancel ...
+  press(runtime, 's', { ctrl: true });     // ... and submit, same chunk
+
+  const appended = session.snapshotEvents().filter(event => event.type === 'dsh-tui-rewrite/message');
+  assert.deepEqual(appended, [], 'a cancelled edit must not be appended');
+  assert.equal(session.surface.nodes.length, 1, 'the surface must be untouched');
+});
+
+test('Ctrl+S in ONE chunk after an edit submits the text as edited', async () => {
+  // The positive control for the case above: what the handler submits must be
+  // the draft including the keys of the same chunk, never the render-time copy.
+  const session = await sessionWithReplies(['HELLO']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  runtime.render({ sessionId: 's1' });
+
+  press(runtime, '', { return: true });
+  press(runtime, 'X');
+  press(runtime, 'Y');
+  press(runtime, 's', { ctrl: true });
+
+  // The payload is the contract: these sessions carry no projection (that round
+  // trip is covered in plugin.test.mjs), so the event is what must be right.
+  const appended = session.snapshotEvents().filter(event => event.type === 'dsh-tui-rewrite/message');
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0].data.content, 'HELLOXY');
+  assert.equal(appended[0].data.targetSeq, session.surface.nodes[0]);
+});
+
+test('typing is a no-op in list mode and Esc closes instead', async () => {
+  const session = await sessionWithReplies(['HELLO']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  runtime.render({ sessionId: 's1' });
+
+  press(runtime, 'q');
+  assert.match(runtime.render({ sessionId: 's1' }).text, /rewrite · 1 assistant reply/u);
+  press(runtime, '', { escape: true });
+  assert.equal(runtime.isClosed(), true);
 });
 
 test('collectTargets reads the projected text once a reply has been rewritten', async () => {
