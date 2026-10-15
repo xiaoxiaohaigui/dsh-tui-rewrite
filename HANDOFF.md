@@ -32,12 +32,22 @@ TUI 状态与日志
   C:/Users/86198/.dsh-tui/   （effect-ledger.jsonl、last-run.json、compile-cache）
 ```
 
-绝对路径是本机专有的。换机时重新定位这些包并改用 `DSH_REWRITE_SAMPLE`。
+绝对路径是本机专有的，但 test-harness/ **不再把它们写死在源码里**：
+全部经 `test-harness/tools.mjs` 解析，换机只需设环境变量。
+
+| 环境变量 | 作用 | 默认（本机） |
+|---|---|---|
+| `DSH_REWRITE_CORE` | dsh 自身解析得到的 `@deepseek-ai/*` 所在目录 | `%APPDATA%/npm/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai` |
+| `DSH_REWRITE_PROFILE` | TUI 用的 profile 目录 | `$DSH_HOME/profiles/dsh-tui`（`DSH_HOME` 未设时为 `~/.dsh`） |
+| `DSH_REWRITE_SAMPLE` | 用于测试的会话日志 | 本机一个中等规模样本 |
+
+`build-fixture.mjs`、`mount.mjs`、`unmount.mjs` 在使用前都会校验路径存在；
+`mount`/`unmount` 会**在写入任何东西之前**就失败，不会写坏一个猜错的 profile。
 
 ## 操作入口
 
 ```bash
-# 全部 headless 验证（60 项）
+# 全部 headless 验证（73 项）
 bash test-harness/run.sh          # 等价：npm test
 
 # 可读的端到端契约报告
@@ -83,6 +93,11 @@ dst
    （在 inject 回调里注册会被算成别的激活的注册）。
 7. 真机挂载后**不要以"已挂上"的状态结束工作**：要么验证通过并记录，
    要么 `npm run unmount` 回滚。
+8. 场景的输入分发**只读 `useMirrorRefs` 的镜像**，且每个镜像必须与它的 state
+   **在同一条语句里**写入；渲染路径**不得**再用 state 回写镜像。React 的状态提交是
+   异步的，一个 stdin chunk 内的渲染带的是**上一轮** state，回写会把它整个抹掉
+   （R-001：一批按键全丢、`Esc` 后同 chunk 的 `Ctrl+S` 仍提交已取消的草稿）。
+   新增键位必须沿用同一纪律，并在 `scene-render.test.mjs` 补「同 chunk 连按」用例。
 
 ## 调试通道
 

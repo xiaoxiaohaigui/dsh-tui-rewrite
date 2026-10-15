@@ -13,12 +13,17 @@
  * bundle layer has not inserted it first.
  */
 import { readFileSync, writeFileSync, copyFileSync, existsSync, mkdirSync, symlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { CORE_DIR, PROFILE_DIR, requirePath } from './tools.mjs';
 
-const PKG = 'D:/dsh-tui-rewrite/packages/dsh-tui-rewrite';
-const CORE = 'C:/Users/86198/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai';
-const PROF = 'C:/Users/86198/.dsh/profiles/dsh-tui';
-const PATCH = join(PROF, 'cordis.patch.yml');
+// Resolved from THIS file, so the script works from any cwd and any checkout.
+const PKG = join(dirname(fileURLToPath(import.meta.url)), '..', 'packages', 'dsh-tui-rewrite');
+// This script writes into a real profile: a guessed location must fail BEFORE
+// the first write, not half-way through one.
+const CORE = requirePath(CORE_DIR, 'the @deepseek-ai packages dsh resolves', 'DSH_REWRITE_CORE');
+const PROF = requirePath(PROFILE_DIR, 'the dsh-tui profile', 'DSH_REWRITE_PROFILE');
+const PATCH = requirePath(join(PROF, 'cordis.patch.yml'), 'the profile patch file', 'DSH_REWRITE_PROFILE');
 
 // 1) the plugin's own peers, resolvable from its real path
 for (const p of ['dsh-session', 'cordis']) {

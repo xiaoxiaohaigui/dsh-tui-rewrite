@@ -5,9 +5,10 @@
  */
 import { readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { PROFILE_DIR, requirePath } from './tools.mjs';
 
-const PROF = 'C:/Users/86198/.dsh/profiles/dsh-tui';
-const PATCH = join(PROF, 'cordis.patch.yml');
+const PROF = PROFILE_DIR;
+const PATCH = requirePath(join(PROF, 'cordis.patch.yml'), 'the profile patch file', 'DSH_REWRITE_PROFILE');
 
 const link = join(PROF, 'node_modules', 'dsh-tui-rewrite');
 if (existsSync(link)) {

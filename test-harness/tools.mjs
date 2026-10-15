@@ -10,7 +10,7 @@
  * @module dsh-tui-rewrite-test/tools
  */
 import { readFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
 import { Context } from '@deepseek-ai/cordis';
@@ -19,6 +19,47 @@ import { SessionStore } from '@deepseek-ai/dsh-session';
 const settle = (ms = 25) => new Promise(resolve => setTimeout(resolve, ms));
 
 const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
+
+/** One developer's Windows install, used whenever the overrides are unset. */
+const NPM_PREFIX = join(process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming'), 'npm');
+
+/**
+ * Where this machine keeps dsh.
+ *
+ * Every script in test-harness/ resolves these through here, so moving to
+ * another machine means setting environment variables instead of editing
+ * source. Each is checked before use, so a wrong guess fails with the variable
+ * name rather than as a confusing ENOENT deeper in.
+ *
+ * - DSH_REWRITE_CORE    .../node_modules/@deepseek-ai (what dsh itself resolves)
+ * - DSH_REWRITE_PROFILE <DSH_HOME>/profiles/dsh-tui (the profile the TUI runs)
+ * - DSH_REWRITE_SAMPLE  a session.v4.jsonl.zstd to test against
+ */
+
+/** `@deepseek-ai/*` as installed alongside the `dsh` executable. */
+export const CORE_DIR = process.env.DSH_REWRITE_CORE
+  ?? join(NPM_PREFIX, 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai');
+
+/** The dsh profile the TUI is started from (`dst`). */
+export const PROFILE_DIR = process.env.DSH_REWRITE_PROFILE
+  ?? join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'profiles', 'dsh-tui');
+
+/**
+ * Assert a path this harness needs is actually there.
+ *
+ * The scripts that mount into a real profile must never proceed on a guessed
+ * location, so they call this before writing anything.
+ *
+ * @param {string} path
+ * @param {string} label - what the path is, for the error line.
+ * @param {string} variable - the environment variable that overrides it.
+ */
+export function requirePath(path, label, variable) {
+  if (!existsSync(path)) {
+    throw new Error(label + ' not found: ' + path + '\n  set ' + variable + '=<path>');
+  }
+  return path;
+}
 
 /**
  * The default sample session: a real, mid-size log from this machine.

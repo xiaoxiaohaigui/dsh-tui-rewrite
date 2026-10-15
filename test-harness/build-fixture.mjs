@@ -17,12 +17,15 @@
  * committing them (see .gitignore).
  */
 import { mkdirSync, rmSync, symlinkSync, writeFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { CORE_DIR, PROFILE_DIR, requirePath } from './tools.mjs';
 
-const FIX = 'D:/dsh-tui-rewrite/test-harness';
-const PKG = 'D:/dsh-tui-rewrite/packages/dsh-tui-rewrite';
-const CORE = 'C:/Users/86198/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai';
-const PROF = 'C:/Users/86198/.dsh/profiles/dsh-tui/node_modules';
+// Resolved from THIS file, so the script works from any cwd and any checkout.
+const FIX = dirname(fileURLToPath(import.meta.url));
+const PKG = join(FIX, '..', 'packages', 'dsh-tui-rewrite');
+const CORE = requirePath(CORE_DIR, 'the @deepseek-ai packages dsh resolves', 'DSH_REWRITE_CORE');
+const PROF = requirePath(join(PROFILE_DIR, 'node_modules'), 'the dsh-tui profile node_modules', 'DSH_REWRITE_PROFILE');
 
 /** Pairs of [link to create, junction target]. */
 const harnessLinks = [
