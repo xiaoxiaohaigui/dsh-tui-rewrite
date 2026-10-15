@@ -49,8 +49,23 @@
   缓解：升级 dsh 时优先跑 `test-harness/run.sh` 与真机挂载检查。
 - 后续工作：向上游确认 `ignorable` 对第三方事件类型的预期用法。
 
+## 订正（2026-10-15 真机轮次，REVIEW.md R-019）
+
+「闸门不生效」只对 **seed 路径**成立。**恢复路径**（从磁盘打开会话）一直在执行这条闸门：
+`dsh-session-persistence/lib/index.js:184` 对「不在 `KNOWN_SESSION_EVENT_TYPES` 且未带
+`ignorable: true`」的事件**整份拒绝**，真机报
+`session "…" contains event type "dsh-tui-rewrite/message" (seq N) unknown to this harness and
+not marked ignorable; refusing to interpret the log`，随后 TUI 退回启动页。
+
+即：决策 1（命名空间化）与 2、3 仍然成立，但「依赖一个碰巧没生效的闸门」这件事**已经发生**——
+后果不是"上游修正后存量日志不可读"，而是**当下就写不出可再打开的会话**（`Session.append`
+没有写 `ignorable` 的途径，见「背景」第 2 条）。复现链与修法候选见
+`docs/explore/phase1b-1c-results.md` 第 6 节；本文「影响」一节中
+"风险：上游修正闸门后增量写入会失败"应改读为"风险已成事实，且表现为**读取**失败"。
+
 ## 关联
 
 - 替代：无
 - 相关任务：`docs/tasks/20261015-142000-rewrite-exploration.md`
 - 相关决策：[2026-10-15-message-rewrite-seam](./2026-10-15-message-rewrite-seam.md)
+- 相关发现：REVIEW.md R-019（P1，未关闭）

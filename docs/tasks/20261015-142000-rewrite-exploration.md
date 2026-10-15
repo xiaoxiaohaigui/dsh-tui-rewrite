@@ -1,9 +1,10 @@
 # 20261015-142000-rewrite-exploration - 初期探索：需求边界与开发路径
 
-- 状态：进行中（阶段 0、1a 已完成；1b **真机验收通过**；1c 真机通过 6/7，
-  **只剩 C2 的方向键/Home/End/退格待人工复核**；审查记录见 REVIEW.md）
+- 状态：**阻塞**（阶段 0、1a 已完成；1b 真机验收通过；1c 真机通过 6/7。
+  阻断项为 REVIEW.md **R-019（P1）**：提交过改写的会话无法再被恢复——恢复路径要求未知事件类型带
+  `ignorable`，而公开 API 写不出该标记。修法未定案前不要挂到日常 profile）
 - 负责人：DSH agent 会话（2026-10-15）
-- 更新时间：2026-10-15 22:40 +0800
+- 更新时间：2026-10-15 23:05 +0800
 - 来源：用户请求「阅读 HANDOFF.md，进行初期探索，明确需求和发展路径」；上源 `C:/Users/86198/dsh-rewrite-poc/HANDOFF.md`
 - 工作位置：`D:/dsh-tui-rewrite`（`git init` 已完成；基线提交 `6f706e4` 已于 2026-10-15 落地，此前「无提交不可回退」的风险已消除）
 
@@ -89,8 +90,13 @@
   两条必须记住的操作规则（同文第 5 节）：**夹具会话一律放独立 DSH_HOME**（把身份不自洽的
   会话塞进真实库会让 dsh-workspace 启动即抛错、TUI 起不来）；**helper 进程按 PID 杀**
   （`taskkill /IM node.exe` 会连宿主一起杀）。
-- 下一步：**只剩 C2 的按键分支人工复核**（方向键 / Home / End / 退格：ConPTY 注入无法忠实
-  投递 ESC 前缀按键，需在真实终端里走一遍）。其余阶段收尾项见
+- **真机轮次发现 P1（2026-10-15，REVIEW.md R-019）**：提交过改写的会话**无法再被恢复**
+  （`cannot resume session "…": … contains event type "dsh-tui-rewrite/message" (seq N) unknown to
+  this harness and not marked ignorable`，TUI 退回启动页）。同一夹具只改一个变量的复现链、
+  上游源码位置与修法候选见 [docs/explore/phase1b-1c-results.md](../explore/phase1b-1c-results.md) 第 6 节。
+  **真机挂载已回滚**（`unmount.mjs`，junction 与 patch 行均已移除）。
+- 下一步：**先定 R-019 的修法**（上游 `Session.append` 增加 `ignorable`／插件侧绕过／放弃自定义类型），
+  定案后再谈 C2 按键分支的人工复核与阶段收尾。其余阶段收尾项见
   [docs/PLAN.md](../docs/PLAN.md) 第 4 节。
 - 真机挂载：**当前为已挂载状态**（2026-10-15 第二轮，`node test-harness/mount.mjs`）——
   junction + patch 行均在位，`dsh --profile dsh-tui --dump-config` 含本插件行，

@@ -98,6 +98,8 @@ D:/dsh-tui-rewrite-onddev/tools/showdelta.mjs 两帧差分 = 该动作实际画�
    宿主只看到孤立 ESC）。这类键位要人工在真实终端复核。
 4. **按 PID 杀进程**：`taskkill /IM node.exe` 会连宿主一起杀掉；只对自建进程树用
    `taskkill /PID <pid> /T /F`。
+5. **别用真机运行去"顺便"验证恢复**：含改写事件的会话本来就打不开（R-019）。
+   判断恢复是否正常，用"原样拷贝 vs 只差一条事件"的对照夹具——两者差一拍即可定性。
 
 ## 硬约束（改代码前先读）
 
@@ -105,6 +107,16 @@ D:/dsh-tui-rewrite-onddev/tools/showdelta.mjs 两帧差分 = 该动作实际画�
    cordis 在 effect 体抛错时会中止 apply 的其余部分，一个会抛的 effect
    会静默吃掉它后面的所有注册。详见 `docs/explore/phase0-results.md` 第 3 节。
 2. 改写事件**绝不能**携带 `surfaceOp` / `sourceEventSeqs`（非 surface 事件类型，会被拒）。
+2b. ⛔ **自有事件类型目前写不出"可再打开"的会话**（REVIEW.md R-019，P1 未闭）：
+   恢复路径 `dsh-session-persistence/lib/index.js:184` 要求「不在 `KNOWN_SESSION_EVENT_TYPES`
+   且未带 `ignorable: true`」的事件**整份拒绝**，而 `Session.append`
+   （`dsh-session/lib/index.js:1441-1459`）只接受 `surfaceOp`/`sourceEventSeqs`，
+   **没有**写 `ignorable` 的途径。真机后果：用户提交一次改写后，该会话
+   `cannot resume session "…": … contains event type "dsh-tui-rewrite/message" (seq N)
+   unknown to this harness and not marked ignorable`，TUI 退回启动页。
+   **修复前不要把插件挂到日常 profile 上使用。** 复现链与修法候选见
+   `docs/explore/phase1b-1c-results.md` 第 6 节。注意：`SessionStore.create({seed})`
+   路径**不**经过这条闸门，所以自动化与离线校验全绿也不能证明它不存在。
 3. 投影用 `deriveEventMessage(ctx.events[t - ctx.baseSeq], ctx.messages)` 取旧值 ——
    `ctx.messages` **只含已被投影改动过的消息**，首次投影时是空 Map。
 4. 场景组件必须用宿主注入的 React（`TuiSceneProps.React`）与

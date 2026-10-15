@@ -2,6 +2,10 @@
 
 - 状态：生效中（阶段 0、1a 已完成；1b **真机验收通过**；1c 真机验收 6/7，C2 的按键分支待人工复核。
   记录见 [docs/explore/phase1b-1c-results.md](explore/phase1b-1c-results.md)）
+- ⛔ **当前阻断（P1，REVIEW.md R-019）**：提交过改写的会话无法再被恢复——
+  恢复路径要求未知事件类型带 `ignorable`，而公开 API 写不出这个标记。
+  **在定案并修复前，不要把这个插件挂到日常 profile 上使用**；本轮真机挂载已回滚。
+  风险表 R1 的旧前提（"闸门是死代码"）已被真机推翻。
 - 更新时间：2026-10-15
 - 上游：`C:/Users/86198/dsh-rewrite-poc/HANDOFF.md`（可行性探索）
 - 任务文件：`docs/tasks/20261015-142000-rewrite-exploration.md`
@@ -276,7 +280,7 @@ End 落在缓冲区末尾。分发读镜像、命中 `key.home`/`key.end`（宿�
 
 | 编号 | 风险 / 问题 | 影响 | 处置 |
 |---|---|---|---|
-| R1 | 未知事件类型的 `ignorable` 闸门在上游是死代码 | 上游修正后存量日志不可读 | 决策已记录；事件命名空间化 + 自检；升级时优先跑测试 |
+| R1 | ~~未知事件类型的 `ignorable` 闸门在上游是死代码~~ **2026-10-15 真机推翻了这条前提**：闸门在**恢复路径**上一直生效（`dsh-session-persistence/lib/index.js:184`），只有 seed 路径不经过它；而 `Session.append` 没有写 `ignorable` 的途径 | **P1：提交过改写的会话无法再被打开**（TUI 报 `contains event type "dsh-tui-rewrite/message" … not marked ignorable` 后退回启动页） | 见 REVIEW.md **R-019** 与 [docs/explore/phase1b-1c-results.md](explore/phase1b-1c-results.md) 第 6 节；**真机挂载已回滚**；修法候选：上游为 `Session.append` 增加 `ignorable`（或对未知类型默认置位） |
 | R2 | `dsh --profile dsh-tui` 静默挂起 | 该项目路径下无法验证 | 已排除与本项目因果；用 `dst`；线索见决策文件 |
 | R3 | 自研多行编辑器是最大 UI 工作量 | 1c 工期不确定 | 先做整段替换式编辑，不做高亮与折行 |
 | R4 | 宿主不提供多行编辑组件 | 需自建 | 同上 |

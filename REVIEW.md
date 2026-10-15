@@ -5,7 +5,8 @@
   （`packages/dsh-tui-rewrite/`、`test-harness/`、`package.json`、`docs/`、`HANDOFF.md`）
 - 审查者：AI 助手（DSH agent 会话）
 - 时间：2026-10-15 22:40（第一轮 17:37 及其修复轮次；第二轮 1b/1c 增量；第二轮附真机验收）
-- 状态：已完成（R-001–R-018 全部关闭；**未发现功能缺陷**；真机 B1–B5 通过、1c 通过 6/7）
+- 状态：已完成（R-001–R-018 全部关闭；真机 B1–B5 通过、1c 通过 6/7）
+- **R-019（P1）未关闭**：真机轮次发现「提交过改写的会话无法再被恢复」，见「真机验收轮次」第 3 条
 
 ## 审查基准
 
@@ -92,10 +93,20 @@
    "移动指针后高亮指向指针所在行"。
 2. **R-018 涉及的滚轮行为在真机上确认**：一格 = 3 行，改为"移动选中项"后视口跟随生效；
    记录里的旧数字按 R-018 订正。
+3. **发现 P1（R-019）**：**提交过改写的会话无法再被打开**。恢复路径
+   （`dsh-session-persistence/lib/index.js:184`）要求「未知事件类型必须带 `ignorable: true`」，
+   而 `Session.append`（`dsh-session/lib/index.js:1441-1459`）只接受 `surfaceOp`/`sourceEventSeqs`，
+   插件**没有**任何公开途径写下这个标记 —— 于是含 `dsh-tui-rewrite/message` 的日志被整份拒绝。
+   真机现象：`DSH 会话没能打开：dsh-tui: cannot resume session "<id>": session "<id>" contains
+   event type "dsh-tui-rewrite/message" (seq N) unknown to this harness and not marked ignorable;
+   refusing to interpret the log`，随后退回启动页。这与 ADR/PLAN 里「闸门是死代码」的记录相反
+   （旧结论来自 seed 路径；**恢复路径是活的**）。
 
 ## Active
 
-（无未关闭问题）
+| ID | 级别 | 位置 | 问题/证据/影响 | 状态 | 验证 |
+|---|---|---|---|---|---|
+| R-019 | P1 | `packages/dsh-tui-rewrite/src/main.js`、`src/projection.js`（改写事件的信封）；上游 `dsh-session-persistence/lib/index.js:184` 与 `dsh-session/lib/index.js:1441-1459` | **提交过改写的会话无法再被恢复**：日志读取器拒绝「未知类型且未标 `ignorable`」的事件，而 `Session.append` 不提供写该标记的途径，插件因此必然写出"不可再打开"的会话。真机证据（同一夹具、只差一条事件）：<br>① 原样拷贝 → 正常进会话（`scene opened`，12 目标）；<br>② 只追加**一条** `dsh-tui-rewrite/message` → 启动页 + `cannot resume session "…": session "…" contains event type "dsh-tui-rewrite/message" (seq 296) unknown to this harness and not marked ignorable; refusing to interpret the log`；<br>③ 同一文件改用逐行重编码（无该事件）→ 恢复正常；<br>④ 该事件加 `ignorable: true` → 恢复正常（12 目标）。<br>影响：插件当前形态下，用户**一旦真的提交一次改写，该会话就再也打不开**（TUI 退回启动页；其余会话与插件加载不受影响）。这也推翻了 ADR `2026-10-15-event-type-namespace` 与 PLAN R1 里「闸门是死代码」的前提 | Open | 真机复现链见上；离线 `SessionStore.create({seed})` 路径**不**暴露此问题（seed 校验接受 `ignorable`、且不查已知类型），这解释了为什么 91 项自动化与阶段 0 的探针都没抓到。修法候选：(a) 上游给 `Session.append` 增加 `ignorable` 选项（或对 `KNOWN_SESSION_EVENT_TYPES` 之外的类型默认置位）；(b) 插件侧不经 `append` 写这条事件（需要私有 API 或改日志，代价与风险都高）；(c) 放弃自定义事件类型（会推翻既有 ADR 的命名空间决策）。**在定案前不要把插件挂到生产 profile 上使用** |
 
 ## Closed
 

@@ -12,6 +12,9 @@
 - **1c 大部分通过**：C1、C3、C4、C5、C6、C7 真机确认，并且**真的提交了一次改写**——
   真机产生的工件回放后 C1–C6 硬不变式 8/8 通过。C2 只完成了一部分：插入、换行、整段粘贴
   已确认；**方向键、Home/End、退格无法用本文的注入手段忠实投递**，仍需人工在真实终端上确认。
+- **⛔ 但真机同时暴露一个 P1（见第 6 节）**：**提交过改写的会话再也打不开**——
+  恢复路径拒绝「未知事件类型且未标 `ignorable`」的日志，而插件写不出这个标记。
+  插件因此不适合挂到日常 profile 上使用，本文的真机挂载已回滚。
 
 ## 2. 方法（可复现）
 
@@ -93,3 +96,51 @@ env -u NO_COLOR FORCE_COLOR=3 COLORTERM=truecolor TERM=xterm-256color \
    只对自己启动的进程树用 `taskkill /PID <pid> /T /F`。
 3. **every run 都要能回滚**：真机跑完检查真实 `~/.dsh` 账目（slug 数、有无新会话），
    确认未被写入；本文所有运行前后都是 9 个 slug。
+
+## 6. ⛔ P1：提交过改写的会话无法再被恢复（REVIEW.md R-019）
+
+**这是本次真机轮次最重要的产出**：阶段 0–1c 的全部自动化（91 项）与离线工件校验都通过，
+但真机启动路径拒绝打开含改写事件的会话。
+
+现象（真机、宽终端可直接读到原文）：
+
+```
+DSH 会话没能打开：dsh-tui: cannot resume session "74b50eef-…": session "74b50eef-…" contains
+event type "dsh-tui-rewrite/message" (seq 296) unknown to this harness and not marked ignorable;
+refusing to interpret the log — it was likely written by a newer harness
+```
+
+随后 TUI 退回启动页（插件本身仍正常加载：`applied`/`entry points verified` 都在）。
+
+复现链（同一份夹具，逐项只改一个变量；每项都用 `--resume <id>` 启动，看插件日志里有没有
+`scene opened`）：
+
+| # | 夹具内容 | 结果 |
+|---|---|---|
+| ① | 真实样本的原样字节拷贝 | ✅ 进会话，`scene opened`，12 个目标 |
+| ② | 只追加**一条** `dsh-tui-rewrite/message`（插件真机提交写下的那种形态） | ❌ 启动页 + 上面的报错 |
+| ③ | 同一文件按同一路径**逐行重编码**（不加事件） | ✅ 恢复正常 → 排除"重编码/帧结构"这个变量 |
+| ④ | ② 的那条事件加上 `ignorable: true` | ✅ 恢复正常 → 确认根因就是这个信封标记 |
+
+根因（上游源码）：
+
+- 恢复时校验：`dsh-session-persistence/lib/index.js:184` ——
+  `if (!KNOWN_SESSION_EVENT_TYPES.has(event.type) && event.ignorable !== true) throw unsupported(...)`。
+- 写入侧：`dsh-session/lib/index.js:1441-1459` 的 `Session.append(type, data, ...opts)` 只取
+  `surfaceOp`/`sourceEventSeqs`，**没有** `ignorable`；`KNOWN_SESSION_EVENT_TYPES` 也是固定集合，
+  官方文档明确否决过第三方注册类型。**即：第三方插件用公开 API 无法写出"可被重新打开"的自有事件。**
+- 为什么之前没发现：阶段 0 的探针与 91 项自动化走的是 `SessionStore.create({seed})` 路径，
+  它接受 `ignorable`、也不查已知类型；**只有从磁盘恢复的路径才检查**。这正是"离线全绿、
+  真机致命"的那类缺口。
+
+影响与处置：
+
+- 影响：用户只要真的提交一次改写，**该会话就再也打不开**（退回启动页；其他会话、插件加载不受影响）。
+  这直接否掉了"改完继续用"的核心用法，因此**真机挂载已回滚**（`unmount.mjs`，junction 与 patch 行均已移除）。
+- ADR `2026-10-15-event-type-namespace` 与 PLAN R1 里"闸门是死代码"的前提需要订正：
+  闸门在**恢复路径**上一直生效，只是 seed 路径不经过它。
+- 修法候选：(a) 上游给 `Session.append` 加 `ignorable` 选项（或对未知类型默认置位）——
+  最干净，且与 dsh-session 自己的文档（`ignorable` 就是为词汇表增长准备的）一致；
+  (b) 插件侧绕过 `append` 写事件（需要私有 API 或直接改日志，代价高、风险大）；
+  (c) 放弃自定义事件类型（推翻既有 ADR 的命名空间决策）。
+  未定案前不要在生产 profile 上挂这个插件。
