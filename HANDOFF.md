@@ -30,6 +30,15 @@ npm pack --dry-run
 包名取无作用域的 `dsh-tui-rewrite`：该名字在 npm 上未被占用，
 而 `@deepseek-harness-tui` 属上游、本账号无权发布到该作用域。
 
+发布后核对线上状态时的两个坑（2026-10-15 实测）：
+
+- **别信 `npm view` 的即时结果**：它读的是 registry 的 CDN 缓存，首次发布会看到
+  旧 packument（甚至 404）。要绕开就加 `--prefer-online`，或直接
+  `curl https://registry.npmjs.org/<name>`。
+- 新包名首次发布会自动多出一个 `0.0.0-stage` 占位版本
+  （description 为 "Temporary package placeholder for staged publishing"）。
+  这是 npm 自己的产物，不是本项目代码；`dist-tags.latest` 仍指向真实版本。
+
 ## 环境事实（2026-10-15 实测）
 
 | 项 | 值 |
