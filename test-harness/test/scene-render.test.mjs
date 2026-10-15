@@ -17,7 +17,8 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  RewriteScene, SCENE_ID, setSessionResolver, sessionFor, collectTargets, messageText, useMirrorRefs,
+  RewriteScene, SCENE_ID, setSessionResolver, sessionFor, collectTargets, messageText, lineStartOf,
+  lineEndOf, useMirrorRefs,
 } from 'dsh-tui-rewrite/scene';
 import { openSession, sessionWithReplies } from '../tools.mjs';
 
@@ -42,6 +43,39 @@ function rows(node, out = []) {
   if (typeof node.props?.onClick === 'function') out.push(node);
   rows(node.props?.children, out);
   return out;
+}
+
+/**
+ * Rows carrying a hover handler, i.e. the list rows the pointer can rest on.
+ * Found by React key rather than by position: the row a test means is the one
+ * for a given seq, and the tests below exist precisely because the two can
+ * disagree.
+ */
+function hoverRows(node, out = []) {
+  if (node === null || node === undefined || typeof node !== 'object') return out;
+  if (Array.isArray(node)) { for (const child of node) hoverRows(child, out); return out; }
+  if (typeof node.props?.onMouseEnter === 'function') out.push(node);
+  hoverRows(node.props?.children, out);
+  return out;
+}
+
+/** The rendered list row for a target seq. */
+function rowFor(view, seq) {
+  return hoverRows(view.tree).find(row => row.key === 'target-' + seq);
+}
+
+/** The scrollable list container: the element the wheel events arrive on. */
+function findWheelBox(node) {
+  if (node === null || node === undefined || typeof node !== 'object') return undefined;
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findWheelBox(child);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+  if (typeof node.props?.onWheel === 'function') return node;
+  return findWheelBox(node.props?.children);
 }
 
 /**
@@ -73,9 +107,18 @@ function makeRenderer() {
     useState: initial => {
       const slot = cursor;
       cursor += 1;
-      if (state[slot] === undefined) state[slot] = { value: typeof initial === 'function' ? initial() : initial };
-      const set = next => { state[slot].value = typeof next === 'function' ? next(state[slot].value) : next; };
-      return [state[slot].value, set];
+      if (state[slot] === undefined) {
+        state[slot] = { value: typeof initial === 'function' ? initial() : initial };
+        // The setter is created ONCE per slot and reused, as React reuses it.
+        // A fresh setter per render would be captured by whatever useCallback
+        // memoizes around it, and the memoized writer would then keep writing
+        // through a closure of an earlier render - a hazard the real host does
+        // not have, so the stub must not invent it.
+        state[slot].set = next => {
+          state[slot].value = typeof next === 'function' ? next(state[slot].value) : next;
+        };
+      }
+      return [state[slot].value, state[slot].set];
     },
     useRef: initial => {
       const slot = memoSlot();
@@ -103,7 +146,11 @@ function makeRenderer() {
     Box: 'Box',
     Text: 'Text',
     useTerminalSize: () => ({ columns: 100, rows: 24 }),
-    useInput: handler => { inputs.push(handler); },
+    // One handler per render pass, like React: useInput re-registers on every
+    // render (its subscription is effect-scoped, so the previous render's
+    // handler is gone). Keeping the old ones would let a test drive a handler
+    // whose captured state is a render stale - and would run every key twice.
+    useInput: handler => { inputs.length = 0; inputs.push(handler); },
   };
   const pass = channel => {
     cursor = 0;
@@ -158,7 +205,7 @@ function press(runtime, input, extra = {}) {
   runtime.inputs[0](input, {
     escape: false, ctrl: false, meta: false, super: false,
     leftArrow: false, rightArrow: false, upArrow: false, downArrow: false,
-    return: false, backspace: false, delete: false, ...extra,
+    return: false, backspace: false, delete: false, home: false, end: false, ...extra,
   });
 }
 
@@ -495,6 +542,262 @@ test('a whitespace-only draft is refused too, and a non-empty one still works', 
   const appended = session.snapshotEvents().filter(event => event.type === 'dsh-tui-rewrite/message');
   assert.equal(appended.length, 1);
   assert.equal(appended[0].data.content, 'HELLOok');
+});
+
+/**
+ * Home/End (phase 1c, PLAN C2).
+ *
+ * These drive the handler rather than a helper because the helper was never the
+ * risk: R-001 was a distribution defect, and a key that is never delivered is
+ * indistinguishable from a key that is not implemented. Both keys are therefore
+ * tested through one chunk, mirror reads included.
+ */
+test('Home and End move within the caret LINE, not the buffer', async () => {
+  const session = await sessionWithReplies(['ABC\nDE\nF']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  runtime.render({ sessionId: 's1' });
+  press(runtime, '', { return: true });          // Enter starts the edit, caret at the end
+
+  const header = () => runtime.render({ sessionId: 's1' }).text.split('\n')[0];
+
+  press(runtime, '', { home: true });            // line 3 "F" starts at unit 7
+  press(runtime, '', { home: true });            // already there: a no-op, not a jump to unit 0
+  assert.equal(header(), ' rewrite · editing seq 0  (line 3/3)');
+  assert.match(caretLine(runtime.render({ sessionId: 's1' })), /▏F/u);
+
+  // End on the LAST line has no terminator to stop at, so it reaches the end of
+  // the buffer - one step further than Home put us.
+  press(runtime, '', { end: true });
+  press(runtime, '', { rightArrow: true });      // already at the end: still the end
+  assert.match(caretLine(runtime.render({ sessionId: 's1' })), /▏F/u);
+
+  // Two steps left: unit 7 is the first unit of line 3 (a position belongs to
+  // the line it opens), and unit 6 is the newline that TERMINATES line 2. The
+  // caret is then on line 2 but NOT at its start, which is what makes the pair
+  // below discriminating: Home must land on unit 4 (line 2's first unit, not
+  // the buffer's), and End must come back to unit 6 (line 2's terminator, not
+  // one step past it into line 3).
+  press(runtime, '', { leftArrow: true });
+  assert.equal(header(), ' rewrite · editing seq 0  (line 3/3)', 'unit 7 opens line 3');
+  press(runtime, '', { leftArrow: true });
+  assert.equal(header(), ' rewrite · editing seq 0  (line 2/3)');
+  press(runtime, '', { home: true });
+  assert.match(caretLine(runtime.render({ sessionId: 's1' })), /▏DE/u);
+  press(runtime, '', { end: true });
+  assert.equal(header(), ' rewrite · editing seq 0  (line 2/3)');
+  press(runtime, '', { home: true });
+  assert.equal(header(), ' rewrite · editing seq 0  (line 2/3)');
+  assert.match(caretLine(runtime.render({ sessionId: 's1' })), /▏DE/u);
+});
+
+test('End then Down keeps the column, because End lands on the terminator', async () => {
+  const session = await sessionWithReplies(['ABCD\nXY\nZ']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  runtime.render({ sessionId: 's1' });
+  press(runtime, '', { return: true });
+
+  press(runtime, '', { upArrow: true });         // line "XY", clamped to its end (unit 5)
+  press(runtime, '', { upArrow: true });         // line "ABCD", clamped to its end for the column (4)
+  press(runtime, '', { home: true });            // Home starts the line "ABCD"
+  press(runtime, '', { end: true });             // End ends it - column 4, where Down will land
+  press(runtime, '', { downArrow: true });
+
+  // Landed in the SAME column on "XY". One column short (the pre-fix behaviour)
+  // would put the caret before the Y.
+  assert.match(caretLine(runtime.render({ sessionId: 's1' })), /▏XY/u);
+});
+
+test('Home then End in ONE chunk resolves against the draft, not the render', async () => {
+  // The mirror discipline: both keys are parsed from the same stdin chunk and
+  // the handler runs twice with no render in between. A handler reading state
+  // would place the second move from the pre-chunk caret.
+  const session = await sessionWithReplies(['ABC']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  runtime.render({ sessionId: 's1' });
+  press(runtime, '', { return: true });
+
+  press(runtime, '', { home: true });            // caret 3 -> 0 ...
+  press(runtime, '', { end: true });             // ... -> 3, in the same chunk
+  assert.match(caretLine(runtime.render({ sessionId: 's1' })), /▏ABC/u);
+
+  press(runtime, '', { home: true });
+  press(runtime, 'X');                           // insert AT the line start
+  assert.match(caretLine(runtime.render({ sessionId: 's1' })), /▏X/u);
+});
+
+test('a list row carries the hover handlers, and hover is component-local state', async () => {
+  const session = await sessionWithReplies(['first', 'second']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  const view = runtime.render({ sessionId: 's1' });
+  const [firstSeq, secondSeq] = session.surface.nodes;
+
+  const first = rowFor(view, firstSeq);
+  const second = rowFor(view, secondSeq);
+  assert.equal(typeof second?.props.onMouseEnter, 'function', 'a row must be able to hover');
+  assert.equal(typeof second?.props.onMouseLeave, 'function');
+  // The host's hover diff hands the event in but the handler takes none; what
+  // matters is that the handlers exist on the ROW (not on an inner Text, whose
+  // rect is the same but whose identity is not stable across renders).
+  assert.equal(second.props.backgroundColor, undefined, 'an untouched row is unhighlighted');
+  assert.equal(first.props.backgroundColor, 'selectionBg', 'the selected row: selection outranks hover');
+
+  // Hover the row that is NOT selected, so the assertion cannot be satisfied by
+  // selection alone.
+  second.props.onMouseEnter();
+  const hovered = runtime.render({ sessionId: 's1' });
+  assert.equal(rowFor(hovered, secondSeq).props.backgroundColor, 'userMessageBackgroundHover');
+  assert.equal(rowFor(hovered, firstSeq).props.backgroundColor, 'selectionBg', 'selection is unchanged');
+
+  rowFor(hovered, secondSeq).props.onMouseLeave();
+  const left = runtime.render({ sessionId: 's1' });
+  assert.equal(rowFor(left, secondSeq).props.backgroundColor, undefined, 'leaving clears the highlight');
+});
+
+test('a leave from the row just left does not blank the row just entered', async () => {
+  // The host diffs its hovered set: one pointer move that crosses a row border
+  // fires LEAVE(old) and ENTER(new) in the SAME React batch. A leave handler
+  // that cleared unconditionally would erase the row the pointer now sits on -
+  // and the pointer is not moving again, so the highlight would stay missing.
+  const session = await sessionWithReplies(['first', 'second']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  const view = runtime.render({ sessionId: 's1' });
+  const [firstSeq, secondSeq] = session.surface.nodes;
+
+  rowFor(view, firstSeq).props.onMouseEnter();
+  const onFirst = runtime.render({ sessionId: 's1' });
+  assert.equal(rowFor(onFirst, firstSeq).props.backgroundColor, 'selectionBg');
+
+  rowFor(onFirst, secondSeq).props.onMouseEnter();
+  rowFor(onFirst, firstSeq).props.onMouseLeave();   // same batch
+  const moved = runtime.render({ sessionId: 's1' });
+
+  assert.equal(rowFor(moved, secondSeq).props.backgroundColor, 'userMessageBackgroundHover');
+  // row 1 is still the SELECTED row, so its own highlight never went away -
+  // the leave from it must not have been read as "hover row 1".
+  assert.equal(rowFor(moved, firstSeq).props.backgroundColor, 'selectionBg');
+});
+
+test('a leave that arrives without an enter still clears the highlight', async () => {
+  // The other half of the contract: a pointer that leaves the list entirely
+  // (onto the header, past the last row, out of the terminal) fires leave with
+  // no enter behind it. The row must go back to unhighlighted.
+  const session = await sessionWithReplies(['first', 'second']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  const view = runtime.render({ sessionId: 's1' });
+  const [firstSeq, secondSeq] = session.surface.nodes;
+
+  // Move the SELECTION to row 1 first: while row 1 is selected it keeps its
+  // selection block whatever the pointer does, so it cannot show the hover
+  // coming and going. Row 2 is then a row whose appearance is hover alone.
+  press(runtime, 'j');
+  const withSelectionMoved = runtime.render({ sessionId: 's1' });
+  assert.equal(rowFor(withSelectionMoved, secondSeq).props.backgroundColor, 'selectionBg');
+
+  rowFor(withSelectionMoved, firstSeq).props.onMouseEnter();
+  const hovered = runtime.render({ sessionId: 's1' });
+  assert.equal(rowFor(hovered, firstSeq).props.backgroundColor, 'userMessageBackgroundHover');
+  assert.equal(rowFor(hovered, secondSeq).props.backgroundColor, 'selectionBg');
+
+  rowFor(hovered, firstSeq).props.onMouseLeave();
+  const out = runtime.render({ sessionId: 's1' });
+  assert.equal(rowFor(out, firstSeq).props.backgroundColor, undefined, 'the pointer left the list');
+  assert.equal(rowFor(out, secondSeq).props.backgroundColor, 'selectionBg', 'selection is not hover');
+});
+
+test('the wheel scrolls the selection through the list, viewport following it', async () => {
+  // The wheel is the third way to move the selection (after the arrows and a
+  // click), and it exists so a long list can be traversed without arrowing
+  // through it. It therefore has to obey the same invariant as the arrows: the
+  // selected row stays inside the viewport, and nothing about the viewport
+  // fights the input back.
+  const session = await sessionWithReplies(
+    Array.from({ length: 40 }, (unused, index) => 'reply ' + index),
+  );
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  const view = runtime.render({ sessionId: 's1' });
+
+  const windowRows = hoverRows(view.tree).length;
+  assert.ok(windowRows > 2 && windowRows < 40, 'the viewport must be a real window over the list');
+  assert.equal(hoverRows(view.tree)[0].key, 'target-0');
+
+  findWheelBox(view.tree).props.onWheel({ deltaY: windowRows + 1, deltaX: 0 });
+  const scrolled = runtime.render({ sessionId: 's1' });
+
+  // The selection moved by the wheel's row step, and the window followed it:
+  // exactly one row carries the selection block, and it is off the top of the
+  // first screen.
+  const step = windowRows + 1;
+  const selectedRows = hoverRows(scrolled.tree)
+    .filter(row => row.props.backgroundColor === 'selectionBg');
+  assert.equal(selectedRows.length, 1, 'exactly one row is selected');
+  assert.equal(selectedRows[0].key, 'target-' + step);
+  // The selection is the last visible row: the window scrolled as little as it
+  // could while still showing the selected row, which is what makes this a
+  // viewport FOLLOW rather than a jump to the top.
+  assert.equal(hoverRows(scrolled.tree).at(-1).key, 'target-' + step);
+  assert.equal(rowFor(scrolled, 0), undefined, 'the first row left the window');
+});
+
+test('hover follows the row, not the screen slot, when the list scrolls under it', async () => {
+  // B5: the pointer does not move, but the rows under it do. The host re-runs
+  // its hit test after the commit and fires ENTER for whichever row now sits at
+  // that screen position; the row that left must not keep a highlight, and the
+  // newcomer must not inherit one from the slot it landed in.
+  const session = await sessionWithReplies(
+    Array.from({ length: 40 }, (unused, index) => 'reply ' + index),
+  );
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  const view = runtime.render({ sessionId: 's1' });
+
+  // Hovered row 0 also happens to be the selected one, whose block would mask
+  // the hover - so this checks the slot's newcomer with row 0 deselected.
+  press(runtime, 'j');                       // selection out of the way
+  const moved = runtime.render({ sessionId: 's1' });
+  rowFor(moved, session.surface.nodes[0]).props.onMouseEnter();
+  const hovered = runtime.render({ sessionId: 's1' });
+  assert.equal(rowFor(hovered, 0).props.backgroundColor, 'userMessageBackgroundHover');
+
+  // Scroll it out of the window (the senders move the selection, viewport follows).
+  const windowRows = hoverRows(hovered.tree).length;
+  findWheelBox(hovered.tree).props.onWheel({ deltaY: windowRows, deltaX: 0 });
+  const scrolled = runtime.render({ sessionId: 's1' });
+
+  assert.equal(rowFor(scrolled, 0), undefined, 'the hovered row left the window');
+  assert.equal(
+    hoverRows(scrolled.tree).some(row => row.props.backgroundColor === 'userMessageBackgroundHover'),
+    false,
+    'no row may inherit the highlight from the screen slot it landed in',
+  );
+
+  // The host reports the pointer over whatever row is there now; that is the
+  // row which gets the highlight.
+  const arrived = hoverRows(scrolled.tree)[0];
+  assert.notEqual(arrived.key, 'target-0');
+  arrived.props.onMouseEnter();
+  const landed = runtime.render({ sessionId: 's1' });
+  const arrivedSeq = Number(arrived.key.slice('target-'.length));
+  assert.equal(rowFor(landed, arrivedSeq).props.backgroundColor, 'userMessageBackgroundHover');
+  assert.equal(rowFor(landed, 0), undefined);
+});
+
+test('a horizontal-only wheel event scrolls nothing', async () => {
+  const session = await sessionWithReplies(['first', 'second', 'third']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  const view = runtime.render({ sessionId: 's1' });
+
+  findWheelBox(view.tree).props.onWheel({ deltaY: 0, deltaX: 4 });
+  const after = runtime.render({ sessionId: 's1' });
+  assert.equal(hoverRows(after.tree)[0].key, 'target-0', 'the selection must not move sideways');
+  assert.equal(rowFor(after, session.surface.nodes[0]).props.backgroundColor, 'selectionBg');
 });
 
 test('typing is a no-op in list mode and Esc closes instead', async () => {

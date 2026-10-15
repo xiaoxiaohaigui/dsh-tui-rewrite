@@ -24,10 +24,20 @@
  * read synchronous ref mirrors, and position edits go through functional
  * setState — the same discipline the reference implementation documents.
  *
- * Keys: arrows/jk move, Enter edits, Esc backs out one layer, Ctrl+S submits.
+ * Keys: arrows/jk move, Enter edits, Esc backs out one layer, Ctrl+S submits,
+ * Home/End go to the line bounds inside the editor.
  * Enter cannot submit: the editor needs it for newlines, and the host's rule is
  * that only an unmodified Enter commits a modal. Ctrl+S is therefore the submit
  * key, and it is also accepted on a list selection.
+ *
+ * Hover is the ONE piece of view state that does not belong in the mirrors:
+ * the mirrors exist for the input handler's decisions, and no key reads the
+ * pointer. It is also the one piece the host will not clean up for us — its
+ * hover diff skips detached nodes, so a row unmounted under the pointer never
+ * gets its `onMouseLeave`. Holding the hovered row by its STABLE seq and
+ * clearing it only when the departing row is still the current one makes the
+ * result independent of enter/leave ordering inside one pointer move, and
+ * leaves "no row hovered" as the honest state after a reflow.
  *
  * @module dsh-tui-rewrite/scene
  */
@@ -153,6 +163,18 @@ export function lineStartOf(chars, cursor) {
   return i;
 }
 
+/**
+ * Index of the line's terminator (or of the last unit when it is the last
+ * line), i.e. the cursor position Home/End and Up/Down share. That sharing is
+ * the point: End then Down lands in the SAME column as Up/Down would, instead
+ * of one column short.
+ */
+export function lineEndOf(chars, cursor) {
+  let i = Math.max(0, Math.min(cursor, chars.length));
+  while (i < chars.length && chars[i] !== '\n') i += 1;
+  return i;
+}
+
 /** Visual row of `cursor` (counting newlines, not wrapped lines). */
 export function rowOf(chars, cursor) {
   let row = 0;
@@ -229,6 +251,9 @@ export function RewriteScene(props) {
   const [draft, setDraft] = useState(undefined);
   const [status, setStatus] = useState('');
   const [caret, setCaret] = useState(0);
+  // Component-local per PLAN 1b, keyed by the row's stable seq (never a row
+  // index: the index changes under the pointer whenever the list scrolls).
+  const [hoverSeq, setHoverSeq] = useState(undefined);
 
   // Mirrors for the input handler, which can run several times per stdin chunk.
   // The handler writes them; the render path must NOT re-sync them from state
@@ -375,6 +400,12 @@ export function RewriteScene(props) {
         move(Math.min(nextStart + column, nextEnd));
         return;
       }
+      // Home/End move within the LINE, not the buffer: the editor is a
+      // multi-line one and the host names the keys `key.home`/`key.end`.
+      // They land on the line's terminator, which is the cursor position
+      // Up/Down already clamp to, so End then Down moves straight down.
+      if (key.home) { move(lineStartOf(chars, cursor)); return; }
+      if (key.end) { move(lineEndOf(chars, cursor)); return; }
       if (key.return || input === '\n' || input === '\r') {
         writeDraft([...chars.slice(0, cursor), '\n', ...chars.slice(cursor)].join(''));
         move(cursor + 1);
@@ -473,22 +504,38 @@ export function RewriteScene(props) {
         flexDirection: 'column',
         flexGrow: 1,
         overflow: 'hidden',
+        // The wheel moves the SELECTION, and the viewport follows it through
+        // the effect above. Scrolling the camera on its own was a second driver
+        // of the same state: the follow effect immediately recentres the
+        // selection, so a wheel notch scrolled nowhere the moment the selected
+        // row was off screen. One driver, one scroll position. (The hint above
+        // still promises that the wheel "scrolls" - which is what the user sees
+        // the list do.)
         onWheel: event => {
           const delta = wheelRows(event.deltaY ?? 0, event.deltaX ?? 0);
           if (delta === 0) return;
-          setScroll(current => Math.max(0, Math.min(Math.max(0, targets.length - bodyRows), current + delta)));
+          choose(Math.max(0, Math.min(targets.length - 1, mirrors.selected.current + delta)));
         },
         children: visibleTargets.length === 0
           ? [jsx(Text, { dimColor: true, children: ' (no assistant replies with text in this session yet)' })]
           : visibleTargets.map((target, offset) => {
             const index = scroll + offset;
             const isSelected = index === selected;
+            const isHovered = target.seq === hoverSeq;
             return jsx(Box, {
               key: 'target-' + target.seq,
               flexDirection: 'column',
               flexShrink: 0,
-              ...(isSelected ? { backgroundColor: 'selectionBg' } : {}),
+              // Selection wins: it is the row Enter and Ctrl+S act on.
+              ...(isSelected ? { backgroundColor: 'selectionBg' }
+                : isHovered ? { backgroundColor: 'userMessageBackgroundHover' } : {}),
               onClick: () => choose(index),
+              onMouseEnter: () => setHoverSeq(target.seq),
+              // Only retract the hover if this row is still the hovered one: a
+              // leave and an enter of the same pointer move land in ONE React
+              // batch, and a leave that cleared unconditionally would blank the
+              // row the pointer just moved onto.
+              onMouseLeave: () => setHoverSeq(current => (current === target.seq ? undefined : current)),
               children: jsx(Text, {
                 bold: isSelected,
                 ...(isSelected ? { color: 'suggestion' } : {}),

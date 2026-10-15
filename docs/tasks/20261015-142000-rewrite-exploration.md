@@ -1,8 +1,9 @@
 # 20261015-142000-rewrite-exploration - 初期探索：需求边界与开发路径
 
-- 状态：进行中（阶段 0、1a 已完成；代码审查的 11 条未关闭问题**已全部修复并关闭**，下一步进入 1b/1c）
+- 状态：进行中（阶段 0、1a 已完成，代码审查 11 条未关闭问题已全部关闭；
+  **1b/1c 实现已完整**，只剩这两阶段的**真机验收**）
 - 负责人：DSH agent 会话（2026-10-15）
-- 更新时间：2026-10-15 18:40 +0800
+- 更新时间：2026-10-15 19:15 +0800
 - 来源：用户请求「阅读 HANDOFF.md，进行初期探索，明确需求和发展路径」；上源 `C:/Users/86198/dsh-rewrite-poc/HANDOFF.md`
 - 工作位置：`D:/dsh-tui-rewrite`（`git init` 已完成；基线提交 `6f706e4` 已于 2026-10-15 落地，此前「无提交不可回退」的风险已消除）
 
@@ -71,10 +72,20 @@
   `npm run report` 5 项 RESULT 全 true。
   修复轮次顺带修正了记录与代码的双向不一致（R-004）：1a 不再声称「不做编辑与提交」，
   1b 记为「仅剩 hover」，1c 记为「仅剩 Home/End 且无真机记录」，见 PLAN 对应阶段。
-- 下一步：推进 1b/1c —— 1b 补 hover 局部 state（行 key 已稳定）并做滚轮/视口真机验收；
-  1c 补 Home/End 并做真机提交验证（phase1a-results 第 3.2 节已留该要求）。
-  新增键位必须沿用镜像纪律并在 `scene-render.test.mjs` 补「同一 chunk 内连按」用例，
-  否则会重现 R-001 那一类丢键缺陷。见 [docs/PLAN.md](../PLAN.md) 阶段 1b/1c。
+- **1b/1c 实现已补齐（2026-10-15 新会话）**：hover 局部 state（稳定 `seq` 为键）、
+  `lineEndOf` + Home/End 分发。自动化 **91 项全绿**，`npm run report` 5 项 RESULT 全 true
+  （修复轮次 81 项 → 本次 +10）。细节与实现取舍见
+  [docs/explore/phase1a-results.md](../explore/phase1a-results.md) 第 6 节，不在本文件复制。
+  两条值得单记的事实：
+  1. **滚轮此前完全无效**：滚轮与「视口跟随选中项」争同一个 `scroll`，
+     选中项一旦不在视口内，滚一格就被重置回 0（实测 20 → 0）。已改为滚轮移动选中项。
+  2. **测试运行时自身失真**：模拟 hook 运行时的 `useInput` 累加 handler、
+     `useState` 每次新建 setter，都会让「实现正确、测出来错误」。已按 React 语义修正。
+- 下一步：**只差真机**。`node test-harness/mount.mjs` → `dst` → 按 `PLAN.md` 第 4 节清单
+  逐条走 B1–B5 与 C1–C7（1c 必须真的提交一次，核 `rewrite appended` 与派生回读），
+  结果记入 `docs/explore/`；结束务必 `unmount.mjs` 回滚。
+  未完成前 1b/1c 的验收复选框保持未勾（实现完成 ≠ 阶段收尾）。
+  见 [docs/PLAN.md](../PLAN.md) 阶段 1b/1c。
 - 真机挂载：**已回滚**（2026-10-15 17:27，`node test-harness/unmount.mjs`）——
   junction 与 patch 行均已移除，`dsh --profile dsh-tui --dump-config` 中不再出现本插件行，
   patch 仍可正常组合。挂载前的备份 `cordis.patch.yml.bak-rewrite-mount-*` 保留。

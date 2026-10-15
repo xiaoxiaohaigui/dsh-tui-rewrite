@@ -39,6 +39,12 @@ export declare function previewOf(text: string): string;
 /** Index of the first unit of the line holding `cursor`. */
 export declare function lineStartOf(chars: readonly string[], cursor: number): number;
 
+/**
+ * Index of the line's terminator (or of the last unit on the last line) - the
+ * cursor position Home/End and Up/Down share.
+ */
+export declare function lineEndOf(chars: readonly string[], cursor: number): number;
+
 /** Visual row of `cursor` (counting newlines, not wrapped lines). */
 export declare function rowOf(chars: readonly string[], cursor: number): number;
 

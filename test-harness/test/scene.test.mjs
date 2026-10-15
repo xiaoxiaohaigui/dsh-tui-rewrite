@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   cellWidth, clipCells, messageText, previewOf, units,
-  lineStartOf, rowOf, wheelRows, collectTargets,
+  lineStartOf, lineEndOf, rowOf, wheelRows, collectTargets,
 } from 'dsh-tui-rewrite/scene';
 
 test('units splits by code point so astral characters edit as one', () => {
@@ -56,6 +56,22 @@ test('lineStartOf finds the first unit of the caret line', () => {
   assert.equal(lineStartOf(chars, 2), 0);
   assert.equal(lineStartOf(chars, 3), 3);
   assert.equal(lineStartOf(chars, 6), 6);
+});
+
+test('lineEndOf finds the line terminator, and clamps a stale caret', () => {
+  const chars = units('ab\ncd\nef');
+  assert.equal(lineEndOf(chars, 0), 2, 'the terminator itself, so End + Down keeps the column');
+  assert.equal(lineEndOf(chars, 2), 2, 'ending exactly on the newline stays there');
+  assert.equal(lineEndOf(chars, 4), 5);
+  assert.equal(lineEndOf(chars, 5), 5);
+  // the last line has no terminator: the buffer end is its end
+  assert.equal(lineEndOf(chars, 6), 8);
+  assert.equal(lineEndOf(chars, 8), 8);
+  // a caret past the end (a shorter draft after a deletion) must not run away
+  assert.equal(lineEndOf(chars, 99), 8);
+  // a trailing newline is a real empty last line, not a clamp to the end
+  assert.equal(lineEndOf(units('ab\n'), 0), 2);
+  assert.equal(lineEndOf(units('ab\n'), 3), 3);
 });
 
 test('rowOf counts newlines before the caret', () => {
