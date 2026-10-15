@@ -1,0 +1,50 @@
+{
+  "name": "dsh-tui-rewrite",
+  "version": "0.0.1",
+  "private": true,
+  "description": "User-driven rewriting of assistant replies on the model-visible surface, leaving the append-only session log untouched.",
+  "type": "module",
+  "main": "src/main.js",
+  "types": "src/main.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/main.d.ts",
+      "default": "./src/main.js"
+    },
+    "./projection": {
+      "types": "./src/projection.d.ts",
+      "default": "./src/projection.js"
+    },
+    "./scene": {
+      "default": "./src/scene.js"
+    },
+    "./debug": {
+      "default": "./src/debug.js"
+    },
+    "./seam": {
+      "default": "./src/seam.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./dsh-plugin.json": "./dsh-plugin.json",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "dsh-plugin.json"
+  ],
+  "engines": {
+    "node": "^22.19 || >=24"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-session": ">=0.2.0-rc.2",
+    "@deepseek-harness-tui/dsh-tui": ">=0.15.0"
+  },
+  "license": "MIT"
+}

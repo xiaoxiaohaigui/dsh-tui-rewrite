@@ -1,0 +1,18 @@
+{
+  "name": "dsh-tui-rewrite-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Workspace root: the dsh-tui-rewrite plugin plus its headless verification harness.",
+  "scripts": {
+    "fixture": "node test-harness/build-fixture.mjs",
+    "pretest": "npm run fixture",
+    "test": "node --test \"test-harness/test/*.test.mjs\"",
+    "report": "node test-harness/report.mjs",
+    "mount": "node test-harness/mount.mjs",
+    "unmount": "node test-harness/unmount.mjs"
+  },
+  "engines": {
+    "node": "^22.19 || >=24"
+  }
+}

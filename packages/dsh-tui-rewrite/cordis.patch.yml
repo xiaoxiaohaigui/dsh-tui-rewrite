@@ -1,0 +1,13 @@
+# dsh-tui-rewrite bundle patch: mount the plugin row into the profile
+# composition tree.
+#
+# Installed by `dsh plugin --profile <name> add dsh-tui-rewrite`, which
+# pnpm-installs this package into the profile and appends it to
+# dsh.profile.bundles. Manual mounting during development: insert the row below
+# into $DSH_HOME/profiles/dsh-tui/cordis.patch.yml.
+#
+# Do not insert a second row with the same id, and do not combine this with
+# `dsh plugin add` for the same package.
+- insert:
+    - id: dsh-tui-rewrite
+      name: 'dsh-tui-rewrite'

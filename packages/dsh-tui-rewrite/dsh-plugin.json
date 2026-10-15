@@ -1,0 +1,20 @@
+{
+  "$schema": "urn:dsh-std:community-draft:dsh-plugin:0.15",
+  "id": "dsh-tui-rewrite",
+  "name": "dsh-tui-rewrite",
+  "version": "0.0.1",
+  "manifestVersion": "0.15",
+  "facets": {
+    "host": {
+      "entry": "src/main.js",
+      "apiVersion": "v1alpha1"
+    }
+  },
+  "requires": {
+    "contracts": []
+  },
+  "permissions": [],
+  "contributes": {},
+  "subscriptions": [],
+  "license": "MIT"
+}
