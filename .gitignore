@@ -13,3 +13,12 @@ Thumbs.db
 
 # dsh-ops runtime audit dir (created by the ops_* toolset, not project source)
 .dsh-ops/
+
+# agent scaffolding and internal working docs — local only, never pushed.
+# These stay on disk and keep working for local agent sessions; they are just
+# not version-controlled. Untracked ones must be removed with
+# `git rm --cached`, since .gitignore alone never stops tracking a file.
+AGENTS.md
+HANDOFF.md
+REVIEW.md
+docs/
