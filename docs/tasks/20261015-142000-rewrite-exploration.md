@@ -72,7 +72,7 @@
   `npm run report` 5 项 RESULT 全 true。
   修复轮次顺带修正了记录与代码的双向不一致（R-004）：1a 不再声称「不做编辑与提交」，
   1b 记为「仅剩 hover」，1c 记为「仅剩 Home/End 且无真机记录」，见 PLAN 对应阶段。
-- **1b/1c 实现已补齐（2026-10-15 新会话）**：hover 局部 state（稳定 `seq` 为键）、
+- **1b/1c 实现已补齐（2026-10-15 新会话，提交 `37b47bc`）**：hover 局部 state（稳定 `seq` 为键）、
   `lineEndOf` + Home/End 分发。自动化 **91 项全绿**，`npm run report` 5 项 RESULT 全 true
   （修复轮次 81 项 → 本次 +10）。细节与实现取舍见
   [docs/explore/phase1a-results.md](../explore/phase1a-results.md) 第 6 节，不在本文件复制。
