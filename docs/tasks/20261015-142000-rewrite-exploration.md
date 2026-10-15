@@ -95,15 +95,42 @@
   this harness and not marked ignorable`，TUI 退回启动页）。同一夹具只改一个变量的复现链、
   上游源码位置与修法候选见 [docs/explore/phase1b-1c-results.md](../explore/phase1b-1c-results.md) 第 6 节。
   **真机挂载已回滚**（`unmount.mjs`，junction 与 patch 行均已移除）。
-- 下一步：**先定 R-019 的修法**（上游 `Session.append` 增加 `ignorable`／插件侧绕过／放弃自定义类型），
-  定案后再谈 C2 按键分支的人工复核与阶段收尾。其余阶段收尾项见
-  [docs/PLAN.md](../docs/PLAN.md) 第 4 节。
-- 真机挂载：**当前为已挂载状态**（2026-10-15 第二轮，`node test-harness/mount.mjs`）——
-  junction + patch 行均在位，`dsh --profile dsh-tui --dump-config` 含本插件行，
-  真实 `~/.dsh` 未被夹具写入（前后 slug 数一致）。回滚命令 `node test-harness/unmount.mjs`；
-  挂载前备份 `cordis.patch.yml.bak-rewrite-mount-2026-10-15T12-54-46-488Z` 保留。
+- 下一步：**待你处理**——待测项（T1–T5）与待决策项（D1–D5）已汇总到下面的
+  「待办：待测项与待决策项」一节，那里是这两类事项的唯一权威清单。
+- 真机挂载：**已回滚**（2026-10-15，`node test-harness/unmount.mjs`）——
+  junction 与 patch 行均已移除；原因是 R-019（P1）未闭，挂上日常用会坏会话。
+  重新挂载用 `node test-harness/mount.mjs`（幂等）；挂载前备份
+  `cordis.patch.yml.bak-rewrite-mount-2026-10-15T12-54-46-488Z` 保留。
 - 阶段划分、验收标准、测试策略与风险登记已独立成 [docs/PLAN.md](../PLAN.md)；
   架构决策见 [docs/decisions/](../decisions/)。本文件保留为本次探索的任务记录。
+
+---
+
+## 待办：待测项与待决策项（2026-10-15 留给用户处理）
+
+> 本节是这两类事项的**唯一权威清单**；`docs/PLAN.md` 第 4/5 节、`REVIEW.md` R-019 与
+> `docs/explore/phase1b-1c-results.md` 只指向本节，不重复内容。
+> 状态：**等你拍板／等你人工执行**，agent 不擅自推进。
+
+### A. 待测项（需要人在真实终端里做；agent 的 ConPTY 注入覆盖不到）
+
+| ID | 待测 | 为什么现在测不了 | 最小步骤 | 判据 |
+|---|---|---|---|---|
+| T1 | 编辑器里的**方向键 / Home / End / 退格**（1c C2 的未覆盖分支） | conhost 把注入的 VT 键序列拆成逐字符控制台事件，宿主只看到孤立 ESC——现场证据：在宿主**自己的输入框**里按 Home 会打出 `[H`（`docs/explore/phase1b-1c-results.md` 第 4 节） | 真实终端 `dst` → `/rewrite` → 选一条**多行**回复 → `Enter` 进编辑 → 依次按 ← / → / ↑ / ↓ / Home / End / Backspace，最后 `Ctrl+S` | ←/→ 逐码点移动；↑/↓ 按列夹取；Home 到行首、End 落在**行终止符**（End 之后按 Down 走同一列）；Backspace 删一个码点；CJK/emoji 不被拆开 |
+| T2 | **含改写事件的会话能否恢复**（R-019 的现象复核） | 需要真实终端；且当前版本**必然失败**——这正是 R-019 | 找一个**已经提交过改写的会话**（没有就临时造一个：`node test-harness/mount.mjs` → `dst` → 改一条 → 退出；**建议用独立 `DSH_HOME` 的夹具，别拿要留的真实会话试**），然后 `dst --resume <id>` | 现在：报 `… contains event type "dsh-tui-rewrite/message" (seq N) … not marked ignorable` 并退回启动页；修复后：正常打开，且消息文本为改写后的内容 |
+| T3 | **横向滚轮**（倾斜滚轮）不触发纵向移动（1b B4 的横向分支） | 注入的是纵向滚轮；横向只到单元测试 + 宿主 `deltaY=0` 的观察 | 用带横向滚轮的鼠标在场景列表上左右滚 | 选中项不动 |
+| T4 | **修完 R-019 后的整体回归** | 事件信封会变，所有真机项都得重跑 | 按 `docs/explore/phase1b-1c-results.md` 第 2 节的流程重跑脚本 | B1–B5、C1/C3–C7 重新逐条通过；T2 转为通过 |
+| T5 | **真实 home 下的挂载形态**（`dst` + 真实 `~/.dsh`） | 本次验收全部用独立 `DSH_HOME`，真实库只核对了「没被写」 | 修好后 `node test-harness/mount.mjs` → 正常使用一段 → `node test-harness/unmount.mjs` | 新会话可正常打开/恢复；`~/.dsh/sessions` 无异常新增 |
+
+### B. 待决策项（需要你定方向）
+
+| ID | 决策 | 选项 | 影响 / 备注 |
+|---|---|---|---|
+| D1 | **R-019 的修法** | (a) 上游给 `Session.append` 增加 `ignorable`（或对 `KNOWN_SESSION_EVENT_TYPES` 之外的类型默认置位）；(b) 插件侧绕过 `append` 写这条事件（私有 API 或直接改日志）；(c) 放弃自定义事件类型，复用某个已知类型 | (a) 最干净，与 dsh-session 自己把 `ignorable` 定义为「词汇表增长的护栏」一致，但要等上游（或本地 patch 安装副本）；(b) 代价与风险都高（内存与磁盘两套账）；(c) 推翻 ADR `2026-10-15-event-type-namespace` 的决策 1–3，需重新验证投影/surface 语义 |
+| D2 | **存量日志怎么办** | (a) 提供「补 `ignorable` 标记」的修复/迁移工具；(b) 接受这些会话永久打不开；(c) 只保证修复后的新事件 | 目前**真实库没有存量**（真实插件日志里 `rewrite appended` 为 0；只有隔离夹具里有一条）。一旦对外发布过再修，就必须回答这个 |
+| D3 | **挂载 / 发布形态** | (a) 修好后继续本机私有挂载；(b) 发布到 npm；(c) 提交 dsh-tui 生态收录 | 阶段 5 本来就待定；R-019 未闭前**不要**挂到日常 profile（本轮已回滚） |
+| D4 | **ConPTY 真机工具是否入库** | (a) 留在仓库外（现状：`D:/dsh-tui-rewrite-onddev/tools/`）；(b) 收进 `test-harness/ondevice/` 并补编译与使用说明 | 入库要连带 Windows-only 与 gcc 编译步骤；阶段 2/3/4 的真机验收都能复用 |
+| D5 | **是否把「磁盘往返」纳入自动化** | (a) 增加一项测试：按真实日志格式写盘后再从磁盘读回；(b) 维持现状（只有 seed 路径的集成测试） | 这次漏掉的正是 seed 路径与**恢复路径**的差异（R-019 的根因）；不补的话同类问题还会再漏一次 |
 
 ---
 

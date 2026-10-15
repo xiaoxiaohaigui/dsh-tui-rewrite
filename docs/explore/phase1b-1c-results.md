@@ -144,3 +144,6 @@ refusing to interpret the log — it was likely written by a newer harness
   (b) 插件侧绕过 `append` 写事件（需要私有 API 或直接改日志，代价高、风险大）；
   (c) 放弃自定义事件类型（推翻既有 ADR 的命名空间决策）。
   未定案前不要在生产 profile 上挂这个插件。
+- 后续待办（人工待测 T1–T5、待决策 D1–D5，含本节的"含改写事件会话恢复"复核与"存量日志"处置）
+  汇总在 [docs/tasks/20261015-142000-rewrite-exploration.md](../tasks/20261015-142000-rewrite-exploration.md)
+  的「待办：待测项与待决策项」一节，那里是唯一权威清单。
