@@ -254,27 +254,48 @@ function registerShortcut(ctx, config, state) {
  */
 function reportLateMountState(ctx, state) {
   const seen = { scene: false, command: false, shortcut: false };
-  const timer = setInterval(() => {
-    if (state.scene) seen.scene = true;
-    if (state.command) seen.command = true;
-    if (state.shortcut) seen.shortcut = true;
-    if (seen.scene && seen.command && seen.shortcut) {
-      clearInterval(timer);
-      debugLog('entry points verified', { ...seen, rewritesSkipped: rewriteSkips() });
-    }
-  }, 250);
-  // Bounded: an entry point that never lands is a real failure and must not
-  // keep probing (or keep a process alive) forever.
-  const giveUp = setTimeout(() => {
+  let timer;
+  let giveUp;
+
+  const stop = () => {
     clearInterval(timer);
-    if (!(seen.scene && seen.command && seen.shortcut)) {
+    clearTimeout(giveUp);
+    timer = undefined;
+    giveUp = undefined;
+  };
+
+  const start = () => {
+    timer = setInterval(() => {
+      if (state.scene) seen.scene = true;
+      if (state.command) seen.command = true;
+      if (state.shortcut) seen.shortcut = true;
+      if (seen.scene && seen.command && seen.shortcut) {
+        stop();
+        debugLog('entry points verified', { ...seen, rewritesSkipped: rewriteSkips() });
+      }
+    }, 250);
+    // Bounded: an entry point that never lands is a real failure and must not
+    // keep probing (or keep a process alive) forever.
+    giveUp = setTimeout(() => {
+      stop();
       debugLog('entry points incomplete', { ...seen, ...state });
       logSafely(ctx, 'warn', name + ': entry points incomplete after 60 s ('
         + JSON.stringify({ ...seen, ...state }) + ')');
-    }
-  }, 60_000);
-  if (typeof timer.unref === 'function') timer.unref();
-  if (typeof giveUp.unref === 'function') giveUp.unref();
+    }, 60_000);
+    if (typeof timer.unref === 'function') timer.unref();
+    if (typeof giveUp.unref === 'function') giveUp.unref();
+  };
+
+  // Owned by the activation: a self-check that keeps writing after its plugin
+  // is gone is a side effect with no owner, which is what the rest of this
+  // plugin refuses to be. Same posture as the seam polls (see src/seam.js).
+  try {
+    ctx.effect(() => stop);
+    start();
+  } catch (error) {
+    logSafely(ctx, 'warn', name + ': could not scope the late-mount self-check ('
+      + (error instanceof Error ? error.message : String(error)) + '); it will not run');
+  }
 }
 
 /**

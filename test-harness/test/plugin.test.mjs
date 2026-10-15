@@ -21,6 +21,8 @@ import { SessionStore, KNOWN_SESSION_EVENT_TYPES } from '@deepseek-ai/dsh-sessio
 import pluginDefault, { name as pluginName, inject as pluginInject, projectionStatus } from 'dsh-tui-rewrite';
 import { REWRITE_EVENT_TYPE } from 'dsh-tui-rewrite/projection';
 import { loadSampleSession, openSession, textOf } from '../tools.mjs';
+// eslint-disable-next-line no-duplicate-imports -- the row builder below needs it
+import { createPlugin } from 'dsh-tui-rewrite';
 
 const settle = (ms = 25) => new Promise(resolve => setTimeout(resolve, ms));
 // The default export IS the mounted plugin (name + inject + apply).
@@ -140,6 +142,35 @@ test('a second owner of the same event type is refused, not displaced', async ()
   assert.equal(projectionStatus(refused).registered, false, 'the refused instance reports itself refused');
   assert.equal(typeof projectionStatus(refused).reason, 'string');
   await host.dispose();
+});
+
+test('the late-mount self-check is owned by the activation (R-011)', async () => {
+  // The interval and the 60 s timeout were created bare, so an unloaded plugin
+  // kept writing to the debug log until the deadline. Every timer this module
+  // starts must now be registered with the activation, the same posture the
+  // seam polls take. The debug log is enabled for this whole file, so the
+  // self-check really does start here.
+  const disposers = [];
+  const ctx = {
+    logger: { info: () => {}, warn: () => {}, debug: () => {} },
+    effect: fn => {
+      const disposer = fn();
+      if (typeof disposer === 'function') disposers.push(disposer);
+      return () => {};
+    },
+    on: () => {},
+    get: () => undefined,
+    sessions: { registerMessageProjection: () => async () => {}, get: () => undefined },
+  };
+
+  const row = createPlugin({ timers: { budgetMs: 200 } });
+  assert.doesNotThrow(() => row.apply(ctx), 'apply must stay synchronous and must not throw');
+  assert.equal(projectionStatus(row).registered, true);
+
+  // One disposer for the projection, at least one for the self-check. Before
+  // the fix the self-check registered NOTHING, so this count is the assertion.
+  assert.ok(disposers.length >= 2, 'expected the self-check to register a disposer too (got ' + disposers.length + ')');
+  for (const dispose of disposers) assert.doesNotThrow(dispose, 'every disposer must be callable');
 });
 
 test('two instances in one process keep separate status (R-008)', async () => {

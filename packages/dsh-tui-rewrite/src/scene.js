@@ -237,6 +237,18 @@ export function RewriteScene(props) {
 
   const bodyRows = Math.max(1, (size.rows ?? 24) - 5);
 
+  // Reported from an effect, NOT from render: debugLog appends to a file
+  // synchronously, and a render can run many times per keystroke. Rendering
+  // must stay free of side effects.
+  useEffect(() => {
+    if (session === undefined) {
+      debugLog('no session for channel', {
+        sessionId: channel?.sessionId,
+        resolver: sessionResolver !== undefined,
+      });
+    }
+  }, [session, channel?.sessionId]);
+
   useEffect(() => {
     debugLog('scene mounted', {
       sessionId: channel?.sessionId,
@@ -408,7 +420,6 @@ export function RewriteScene(props) {
     // startup placeholder), or the id names a session this process does not
     // hold. All three are "nothing to rewrite" - the scene says so instead of
     // presenting an empty list that looks like a bug.
-    debugLog('no session for channel', { sessionId: channel?.sessionId, resolver: sessionResolver !== undefined });
     return jsxs(Box, {
       flexDirection: 'column',
       children: [

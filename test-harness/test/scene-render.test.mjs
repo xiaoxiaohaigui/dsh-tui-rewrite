@@ -232,6 +232,24 @@ test('a session shape with a non-array content field degrades instead of throwin
   assert.deepEqual(collectTargets(session), []);
 });
 
+test('the no-session notice is not a render-time side effect', async () => {
+  // debugLog appends to a file SYNCHRONOUSLY, and a render runs many times per
+  // keystroke. The notice belongs to the effect that watches the resolved
+  // session, so re-rendering the same state must not write again.
+  setSessionResolver(undefined);
+  const runtime = makeRenderer();
+  assert.match(runtime.render({ sessionId: 's1' }).text, /no live session is bound/u);
+
+  // The notice lives in an effect keyed on the resolved session. With an
+  // unchanged session and an unchanged channel id, rendering again must produce
+  // no effect to run at all - that is what keeps the file I/O off the render
+  // path. (A render-time debugLog would have written on every single pass.)
+  const settled = runtime.effects().length;
+  runtime.render({ sessionId: 's1' });
+  runtime.render({ sessionId: 's1' });
+  assert.equal(runtime.effects().length, settled, 'a re-render with the same session must schedule nothing');
+});
+
 test('the scene paints one row per assistant reply, from the resolver session', async () => {
   const session = await sessionWithReplies(['first reply', 'second reply']);
   setSessionResolver(id => (id === 's1' ? session : undefined));
