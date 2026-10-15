@@ -59,13 +59,24 @@ export interface PluginRow {
   name: typeof name;
   inject: typeof inject;
   apply: (ctx: Context) => void;
+  /**
+   * This instance's own live state. Present so a caller that holds a row can
+   * ask about THAT row: a process can hold several contexts, and the
+   * no-argument `projectionStatus()` can only describe the newest (R-008).
+   */
+  state: ProjectionStatus;
 }
 
 /** Build the activation. Production uses the default export. */
 export declare function createPlugin(config?: PluginConfig): PluginRow;
 
-/** Read-only probe for tests and diagnostics. */
-export declare function projectionStatus(): ProjectionStatus;
+/**
+ * Read-only probe for tests and diagnostics.
+ *
+ * @param plugin - the row to describe. Omit to describe the newest instance,
+ * which is the single-instance production case.
+ */
+export declare function projectionStatus(plugin?: PluginRow): ProjectionStatus;
 
 export { REWRITE_EVENT_TYPE, rewriteProjection } from './projection.js';
 export { registerSeamWithRetry, whenSeamMounted } from './seam.js';

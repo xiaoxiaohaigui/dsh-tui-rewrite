@@ -68,12 +68,15 @@ test('a composition without the seams records no entry-point lines', async () =>
   const root = new Context();
   root.plugin(SessionStore);
   await settle();
-  const host = root.plugin(plugin.createPlugin({ timers: { budgetMs: 150 } }));
+  // Its own instance, so the status read below describes THIS composition
+  // rather than whichever other test's plugin was built last (R-008).
+  const row = plugin.createPlugin({ timers: { budgetMs: 150 } });
+  const host = root.plugin(row);
   await settle();
 
   const messages = lines().map(entry => entry.message);
   assert.deepEqual(messages, ['applied']);
-  assert.equal(plugin.projectionStatus().registered, true);
+  assert.equal(plugin.projectionStatus(row).registered, true);
   await host.dispose();
   rmSync(logPath, { force: true });
 });

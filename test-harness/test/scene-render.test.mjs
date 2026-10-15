@@ -16,7 +16,9 @@
  */
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RewriteScene, SCENE_ID, setSessionResolver, sessionFor, collectTargets } from 'dsh-tui-rewrite/scene';
+import {
+  RewriteScene, SCENE_ID, setSessionResolver, sessionFor, collectTargets, messageText, useMirrorRefs,
+} from 'dsh-tui-rewrite/scene';
 import { openSession, sessionWithReplies } from '../tools.mjs';
 
 // A leaked resolver would make the next test read another test's session.
@@ -74,6 +76,11 @@ function makeRenderer() {
       if (state[slot] === undefined) state[slot] = { value: typeof initial === 'function' ? initial() : initial };
       const set = next => { state[slot].value = typeof next === 'function' ? next(state[slot].value) : next; };
       return [state[slot].value, set];
+    },
+    useRef: initial => {
+      const slot = memoSlot();
+      memos[slot] ??= { value: { current: initial } };
+      return memos[slot].value;
     },
     useMemo: (factory, deps) => {
       const slot = memoSlot();
@@ -159,6 +166,71 @@ function press(runtime, input, extra = {}) {
 function caretLine(view) {
   return view.text.split('\n').find(line => line.includes('▏'));
 }
+
+/**
+ * A React stub whose ONLY tracked hook is the mirror hook, so a test can count
+ * how many slots it occupies.
+ */
+function mirrorHost({ withUseRef }) {
+  let slots = 0;
+  const cache = [];
+  const React = {
+    useRef: initial => {
+      const slot = slots++;
+      cache[slot] ??= { current: initial };
+      return cache[slot];
+    },
+    useMemo: (factory, deps) => {
+      const slot = slots++;
+      cache[slot] ??= { value: factory(), deps };
+      return cache[slot].value;
+    },
+  };
+  if (!withUseRef) delete React.useRef;
+  // React resets the hook cursor at the start of every render; the call below
+  // is the hook's call site, so each one begins a fresh pass.
+  return { React, slots: () => slots, beginRender: () => { slots = 0; } };
+}
+
+test('the mirror hook is stable across renders and takes one slot either way', () => {
+  // Its stability is what makes the handler's reads meaningful: a fresh mirror
+  // object per render would detach the handler from the state it tracks, and a
+  // hook count that varied between renders would shift every later hook slot.
+  for (const withUseRef of [true, false]) {
+    const host = mirrorHost({ withUseRef });
+    host.beginRender();
+    const first = useMirrorRefs(host.React);
+    assert.equal(host.slots(), 1, 'the mirror hook must occupy exactly one slot');
+    first.draft.current = 'EDITED';
+    first.selected.current = 3;
+
+    host.beginRender();
+    const second = useMirrorRefs(host.React);
+    assert.equal(host.slots(), 1, 'one slot per render, whether it is useRef or useMemo');
+    assert.equal(second, first, 'the mirror object must survive a render');
+    assert.equal(second.draft.current, 'EDITED', 'a render must not reset the mirrors');
+    assert.equal(second.selected.current, 3);
+  }
+});
+
+test('a session shape with a non-array content field degrades instead of throwing', () => {
+  // collectTargets only wraps deriveEventMessage in a try/catch, so a throw from
+  // the text extraction escapes into the render path and the host's error
+  // boundary closes the whole scene. Same guard as applyRewrite uses.
+  assert.equal(messageText({ role: 'assistant', content: 'plain string' }), '');
+  assert.equal(messageText({ role: 'assistant', content: null }), '');
+  assert.equal(messageText({ role: 'assistant', content: { type: 'text' } }), '');
+  assert.equal(messageText({ role: 'assistant' }), '');
+  // a text part with no string text must not become the literal "undefined"
+  assert.equal(messageText({ content: [{ type: 'text' }, { type: 'text', text: 'ok' }] }), '\nok');
+
+  const session = {
+    surface: { nodes: [0] },
+    eventAt: () => ({ seq: 0 }),
+    deriveEventMessage: () => ({ role: 'assistant', content: 'plain string' }),
+  };
+  assert.deepEqual(collectTargets(session), []);
+});
 
 test('the scene paints one row per assistant reply, from the resolver session', async () => {
   const session = await sessionWithReplies(['first reply', 'second reply']);
@@ -356,6 +428,55 @@ test('Ctrl+S in ONE chunk after an edit submits the text as edited', async () =>
   assert.equal(appended.length, 1);
   assert.equal(appended[0].data.content, 'HELLOXY');
   assert.equal(appended[0].data.targetSeq, session.surface.nodes[0]);
+});
+
+test('a draft emptied in the editor is refused instead of appended', async () => {
+  // R-009: the projection would happily produce an assistant message whose only
+  // text block is empty, a shape the natural derivation never produces.
+  const session = await sessionWithReplies(['HELLO']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  runtime.render({ sessionId: 's1' });
+
+  press(runtime, '', { return: true });
+  for (let i = 0; i < 5; i += 1) press(runtime, '', { backspace: true });   // empty it
+  runtime.render({ sessionId: 's1' });
+  press(runtime, 's', { ctrl: true });                                      // submit anyway
+
+  assert.deepEqual(
+    session.snapshotEvents().filter(event => event.type === 'dsh-tui-rewrite/message'),
+    [],
+    'an empty draft must not become a rewrite event',
+  );
+  const view = runtime.render({ sessionId: 's1' });
+  assert.match(view.text, /empty text — nothing appended/u);
+  // the editor closed, so the list is showing again and the reply is intact
+  assert.match(view.text, /rewrite · 1 assistant reply/u);
+});
+
+test('a whitespace-only draft is refused too, and a non-empty one still works', async () => {
+  const session = await sessionWithReplies(['HELLO']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  runtime.render({ sessionId: 's1' });
+
+  press(runtime, '', { return: true });
+  for (let i = 0; i < 5; i += 1) press(runtime, '', { backspace: true });
+  press(runtime, '   ');                    // spaces only
+  runtime.render({ sessionId: 's1' });
+  press(runtime, 's', { ctrl: true });
+  assert.deepEqual(
+    session.snapshotEvents().filter(event => event.type === 'dsh-tui-rewrite/message'),
+    [],
+  );
+
+  // the control: real text still submits
+  press(runtime, '', { return: true });
+  press(runtime, 'ok');
+  press(runtime, 's', { ctrl: true });
+  const appended = session.snapshotEvents().filter(event => event.type === 'dsh-tui-rewrite/message');
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0].data.content, 'HELLOok');
 });
 
 test('typing is a no-op in list mode and Esc closes instead', async () => {

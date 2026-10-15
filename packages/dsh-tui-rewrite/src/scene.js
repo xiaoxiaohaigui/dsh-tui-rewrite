@@ -118,11 +118,25 @@ export function clipCells(text, budget) {
   return out;
 }
 
-/** The message's own text, verbatim (what the editor starts from). */
+/**
+ * The message's own text, verbatim (what the editor starts from).
+ *
+ * `content` is a block array for every message dsh-llm produces, but this runs
+ * from the render path on a session that may come from another kernel, and a
+ * non-array there would throw out of `collectTargets`'s caller - past the
+ * try/catch that only wraps `deriveEventMessage` - and close the whole scene
+ * through the host's error boundary. `applyRewrite` already guards the same
+ * field the same way; the two must agree on what a usable message is.
+ *
+ * @param {{content?: unknown}} [message]
+ * @returns {string}
+ */
 export function messageText(message) {
-  return (message?.content ?? [])
+  const content = message?.content;
+  const parts = Array.isArray(content) ? content : [];
+  return parts
     .filter(part => part !== null && typeof part === 'object' && part.type === 'text')
-    .map(part => part.text)
+    .map(part => (typeof part.text === 'string' ? part.text : ''))
     .join('\n');
 }
 
@@ -167,12 +181,14 @@ export function rowOf(chars, cursor) {
  */
 export function useMirrorRefs(React) {
   const { useRef, useMemo } = React;
-  // useMemo is the fallback for a host React that does not expose useRef; the
-  // hook count stays at one either way, so the slots do not shift.
-  if (typeof useRef !== 'function') {
-    return useMemo(() => makeMirrors(), []);
-  }
-  return useRef(makeMirrors()).current;
+  // useRef is the correct API: React documents useMemo as a performance hint
+  // only, so a discarded cache would hand back a NEW mirror object and detach
+  // the handler from the state it is supposed to track.
+  if (typeof useRef === 'function') return useRef(makeMirrors()).current;
+  // Fallback for a host React without useRef. It occupies exactly ONE hook slot
+  // like useRef does, so the slot layout - and therefore every later hook - does
+  // not depend on which branch ran. scene-render.test.mjs exercises both.
+  return useMemo(() => makeMirrors(), []);
 }
 
 /** The initial mirror set: one stable ref object per value the handler reads. */
@@ -282,6 +298,17 @@ export function RewriteScene(props) {
     if (text === undefined || target === undefined || session === undefined) return;
     if (text === target.original) {
       leaveEdit('unchanged — nothing appended');
+      return;
+    }
+    // An emptied editor is not a rewrite. The projection would faithfully
+    // produce an assistant message with an empty text block, which nothing
+    // downstream asks for and `deriveEventMessage` would never produce on its
+    // own for an original event - so refuse it here rather than hand the model
+    // a message the plugin invented. Whitespace-only counts as emptied: a
+    // reply of nothing but spaces is not text a user meant to send.
+    if (text.trim().length === 0) {
+      debugLog('empty rewrite refused', { targetSeq: target.seq });
+      leaveEdit('empty text — nothing appended');
       return;
     }
     try {

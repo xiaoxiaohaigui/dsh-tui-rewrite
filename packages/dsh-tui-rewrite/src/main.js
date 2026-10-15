@@ -52,11 +52,31 @@ export const SHORTCUT_COMBO = 'alt+r';
 export { REWRITE_EVENT_TYPE, rewriteProjection, SCENE_ID };
 export { whenSeamMounted, registerSeamWithRetry, SEAM_BUDGET_MS } from './seam.js';
 
-/** Live state, so observability code can tell "never applied" from "inert". */
-const state = { ok: false, reason: undefined, applied: false, scene: false, command: false, shortcut: false };
+/**
+ * Live state, so observability code can tell "never applied" from "inert".
+ *
+ * ONE PER PLUGIN INSTANCE, not one per module: a process can hold several
+ * cordis contexts (a test suite, two mounts in one host, a reload), and shared
+ * module state would let any of them reset or overwrite another's status - the
+ * diagnostic reading would then describe whichever instance applied last.
+ *
+ * @returns {{ok: boolean, reason: string | undefined, applied: boolean, scene: boolean, command: boolean, shortcut: boolean}}
+ */
+function makeState() {
+  return { ok: false, reason: undefined, applied: false, scene: false, command: false, shortcut: false };
+}
+
+/**
+ * The most recently created instance, so the no-argument `projectionStatus()`
+ * keeps working for a caller that has no handle (and for the single-instance
+ * production case, where they are the same thing).
+ */
+let latest;
 
 /** Read-only probe for tests and diagnostics. */
-export function projectionStatus() {
+export function projectionStatus(plugin) {
+  const state = plugin?.state ?? latest?.state;
+  if (state === undefined) return { registered: false, reason: 'no plugin instance created yet', applied: false, scene: false, command: false, shortcut: false };
   return { registered: state.ok, reason: state.reason, applied: state.applied, scene: state.scene, command: state.command, shortcut: state.shortcut };
 }
 
@@ -77,7 +97,7 @@ function logSafely(ctx, level, message) {
  *
  * @param {import('@deepseek-ai/cordis').Context} ctx - plugin context.
  */
-function registerProjection(ctx) {
+function registerProjection(ctx, state) {
   // A skipped rewrite is invisible to the user (the original text just stays),
   // so the projection reports it through here. Installed even when registration
   // is refused: the two failures are independent.
@@ -115,7 +135,7 @@ function registerProjection(ctx) {
  *
  * @param {import('@deepseek-ai/cordis').Context} ctx - plugin context.
  */
-function registerScene(ctx, config) {
+function registerScene(ctx, config, state) {
   // Published even without a scenes seam: the resolver is scene plumbing, and a
   // composition that gains the seam later must not need a second apply.
   setSessionResolver(id => ctx.sessions.get(id));
@@ -156,7 +176,7 @@ function openScene(ctx) {
  *
  * @param {import('@deepseek-ai/cordis').Context} ctx - plugin context.
  */
-function registerCommand(ctx) {
+function registerCommand(ctx, state) {
   const definition = {
     name: COMMAND_NAME,
     description: 'Rewrite the text of an assistant reply on the model-visible surface',
@@ -201,7 +221,7 @@ function registerCommand(ctx) {
  *
  * @param {import('@deepseek-ai/cordis').Context} ctx - plugin context.
  */
-function registerShortcut(ctx, config) {
+function registerShortcut(ctx, config, state) {
   const bind = shortcuts => {
     try {
       const dispose = shortcuts.register(SHORTCUT_COMBO, {
@@ -232,7 +252,7 @@ function registerShortcut(ctx, config) {
  *
  * @param {import('@deepseek-ai/cordis').Context} ctx - plugin context.
  */
-function reportLateMountState(ctx) {
+function reportLateMountState(ctx, state) {
   const seen = { scene: false, command: false, shortcut: false };
   const timer = setInterval(() => {
     if (state.scene) seen.scene = true;
@@ -265,7 +285,7 @@ function reportLateMountState(ctx) {
  *
  * @param {import('@deepseek-ai/cordis').Context} ctx - plugin context.
  */
-function watchForInertSessions(ctx) {
+function watchForInertSessions(ctx, state) {
   ctx.on('session/created', (session) => {
     if (state.ok) return;
     logSafely(ctx, 'warn',
@@ -290,35 +310,42 @@ function watchForInertSessions(ctx) {
  * @param {{timers?: {schedule?: Function, cancel?: Function}}} [config]
  */
 export function createPlugin(config = {}) {
+  // One state object per instance: two rows in one process must not be able to
+  // reset or overwrite each other's status (see makeState).
+  const state = makeState();
+  const plugin = { name, inject, state, apply: undefined };
+  // Newest instance wins the no-argument projectionStatus() reading, which is
+  // exactly the single-instance production case.
+  latest = plugin;
   const apply = ctx => {
     try {
-      registerProjection(ctx);
+      registerProjection(ctx, state);
     } catch (error) {
       state.ok = false;
       state.reason = 'registerProjection: ' + (error instanceof Error ? error.message : String(error));
     }
     try {
-      registerScene(ctx, config);
+      registerScene(ctx, config, state);
     } catch (error) {
       logSafely(ctx, 'warn', name + ': scene registration failed (' + (error instanceof Error ? error.message : String(error)) + ')');
     }
     try {
-      registerCommand(ctx);
+      registerCommand(ctx, state);
     } catch (error) {
       logSafely(ctx, 'warn', name + ': command registration failed (' + (error instanceof Error ? error.message : String(error)) + ')');
     }
     try {
-      registerShortcut(ctx, config);
+      registerShortcut(ctx, config, state);
     } catch (error) {
       logSafely(ctx, 'warn', name + ': shortcut registration failed (' + (error instanceof Error ? error.message : String(error)) + ')');
     }
     try {
-      if (debugEnabled) reportLateMountState(ctx);
+      if (debugEnabled) reportLateMountState(ctx, state);
     } catch (error) {
       logSafely(ctx, 'warn', name + ': late-mount self-check failed (' + (error instanceof Error ? error.message : String(error)) + ')');
     }
     try {
-      watchForInertSessions(ctx);
+      watchForInertSessions(ctx, state);
     } catch (error) {
       state.reason = state.reason ?? ('watchForInertSessions: ' + (error instanceof Error ? error.message : String(error)));
     }
@@ -331,7 +358,11 @@ export function createPlugin(config = {}) {
     // 'entry points verified' summary they end in.
     debugLog('applied', { registered: state.ok });
   };
-  return { name, inject, apply };
+  plugin.apply = apply;
+  return plugin;
 }
 
-export default createPlugin();
+/** The row a profile mounts. Built last, so it is the default `latest`. */
+const defaultPlugin = createPlugin();
+
+export default defaultPlugin;

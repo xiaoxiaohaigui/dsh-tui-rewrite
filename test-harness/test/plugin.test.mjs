@@ -48,9 +48,13 @@ async function boot() {
   const root = new Context();
   root.plugin(SessionStore);
   await settle();
-  const host = root.plugin(await budgetRow({ budgetMs: 300 }));
+  const row = await budgetRow({ budgetMs: 300 });
+  const host = root.plugin(row);
   await settle();
-  return { root, host };
+  // The ROW carries its own status (R-008): asserting through the bare
+  // projectionStatus() would read whichever instance was built last, and this
+  // suite runs its tests concurrently.
+  return { root, host, row };
 }
 
 test('a malformed rewrite event degrades to a skip instead of stranding the session', async () => {
@@ -113,15 +117,14 @@ test('mounting the store row makes ctx.sessions resolvable', async () => {
 });
 
 test('the plugin registers its projection exactly once', async () => {
-  const { root } = await boot();
+  const { root, row } = await boot();
   const owners = root.sessions.messageProjections.filter(projection => projection.type === REWRITE_EVENT_TYPE);
   assert.equal(owners.length, 1);
-  assert.equal(projectionStatus().registered, true);
-  assert.equal(projectionStatus().applied, true);
+  assert.equal(projectionStatus(row).registered, true);
+  assert.equal(projectionStatus(row).applied, true);
 });
 
 test('a second owner of the same event type is refused, not displaced', async () => {
-  const { root } = await boot();
   // A foreign projection already holding our type: registration must fail, and
   // the plugin must survive it (an unguarded effect body would have aborted the
   // rest of apply and taken the self-check down with it).
@@ -130,12 +133,38 @@ test('a second owner of the same event type is refused, not displaced', async ()
   await settle();
   foreign.sessions.registerMessageProjection({ type: REWRITE_EVENT_TYPE, project: () => new Map() });
   const before = foreign.sessions.messageProjections.length;
-  const host = foreign.plugin(row);
+  const refused = await budgetRow({ budgetMs: 300 });
+  const host = foreign.plugin(refused);
   await settle();
   assert.equal(foreign.sessions.messageProjections.length, before);
-  assert.equal(projectionStatus().registered, false);
-  assert.equal(typeof projectionStatus().reason, 'string');
+  assert.equal(projectionStatus(refused).registered, false, 'the refused instance reports itself refused');
+  assert.equal(typeof projectionStatus(refused).reason, 'string');
   await host.dispose();
+});
+
+test('two instances in one process keep separate status (R-008)', async () => {
+  // The module used to hold ONE state object, so a second instance's apply -
+  // and any instance's dispose - rewrote the first one's reading. A diagnostic
+  // that describes whichever plugin applied last is worse than none.
+  const good = await boot();
+  assert.equal(projectionStatus(good.row).registered, true);
+
+  const foreign = new Context();
+  foreign.plugin(SessionStore);
+  await settle();
+  foreign.sessions.registerMessageProjection({ type: REWRITE_EVENT_TYPE, project: () => new Map() });
+  const refused = await budgetRow({ budgetMs: 300 });
+  const refusedHost = foreign.plugin(refused);
+  await settle();
+
+  assert.equal(projectionStatus(refused).registered, false);
+  assert.equal(projectionStatus(good.row).registered, true, 'the other instance must be unaffected');
+
+  // Disposing one must not clear the other either.
+  await refusedHost.dispose();
+  assert.equal(projectionStatus(good.row).registered, true);
+  await good.host.dispose();
+  assert.equal(projectionStatus(good.row).registered, false, 'its own dispose does clear it');
 });
 
 test('a session created BEFORE the projection still honours it', async () => {
@@ -206,12 +235,13 @@ test('a later rewrite of the same seq wins, so undo is just another append', asy
 });
 
 test('disposing the fiber unwinds the projection', async () => {
-  const { root, host } = await boot();
+  const { root, host, row } = await boot();
   assert.equal(root.sessions.messageProjections.some(p => p.type === REWRITE_EVENT_TYPE), true);
+  assert.equal(projectionStatus(row).registered, true);
   await host.dispose();
   await settle();
   assert.equal(root.sessions.messageProjections.some(p => p.type === REWRITE_EVENT_TYPE), false);
-  assert.equal(projectionStatus().registered, false);
+  assert.equal(projectionStatus(row).registered, false);
 });
 test('a composition WITHOUT the TUI seams still applies and reports itself inert for the UI parts', async () => {
   // The Claude / Codex kernels and any headless composition have no tuiScenes /
@@ -226,9 +256,10 @@ test('a composition WITHOUT the TUI seams still applies and reports itself inert
   const root = new Context();
   root.plugin(SessionStore);
   await settle();
-  const host = root.plugin(await budgetRow({ budgetMs: 400 }));
+  const row = await budgetRow({ budgetMs: 400 });
+  const host = root.plugin(row);
   await settle();
-  const status = projectionStatus();
+  const status = projectionStatus(row);
   assert.equal(status.registered, true);
   assert.equal(status.scene, false);
   assert.equal(status.command, false);
@@ -271,10 +302,12 @@ test('the scene registers with the host scene runtime under the advertised id', 
   await settle();
   const sceneRuntime = { registered: [], opened: [], register(descriptor) { this.registered.push(descriptor); return () => {}; }, open(id) { this.opened.push(id); return id === 'dsh-tui-rewrite-scene'; } };
   root.provide('tuiScenes', sceneRuntime);
-  const host = root.plugin(row);
+  // Its own instance: the module default row is shared with other tests.
+  const own = await budgetRow({ budgetMs: 300 });
+  const host = root.plugin(own);
   await settle();
 
-  assert.equal(projectionStatus().scene, true);
+  assert.equal(projectionStatus(own).scene, true);
   assert.equal(sceneRuntime.registered.length, 1);
   const descriptor = sceneRuntime.registered[0];
   assert.equal(descriptor.id, 'dsh-tui-rewrite-scene');
@@ -298,7 +331,9 @@ test('a command lands on the direct registry when the mediated host refuses', as
   root.provide('commands', { register(definition) { registered.push(definition); return () => {}; } });
   root.provide('tuiScenes', { register: () => () => {}, open: () => true });
 
-  const host = root.plugin(row);
+  // Its own instance: the module default row is shared with other tests.
+  const own = await budgetRow({ budgetMs: 300 });
+  const host = root.plugin(own);
   await settle();
 
   assert.deepEqual(attempts, ['mediated'], 'the preferred path must be tried first');
@@ -306,7 +341,7 @@ test('a command lands on the direct registry when the mediated host refuses', as
   assert.equal(registered[0].name, 'rewrite');
   assert.equal(registered[0].recordInput, false, 'opening a scene is not conversation content');
   assert.equal(typeof registered[0].handler, 'function');
-  assert.equal(projectionStatus().command, true);
+  assert.equal(projectionStatus(own).command, true);
   await host.dispose();
 });
 
@@ -323,6 +358,14 @@ test('the command handler reports a scene-open failure instead of failing silent
   const result = registered[0].handler();
   assert.equal(result.kind, 'error');
   assert.match(result.text, /not registered/u);
+  await host.dispose();
+});
+
+test('projectionStatus without a handle still describes the newest instance', async () => {
+  // The single-instance production case: callers that have no row handle keep
+  // working. A bare call before any instance exists must be honest, not throw.
+  const { host, row } = await boot();
+  assert.equal(projectionStatus().registered, projectionStatus(row).registered);
   await host.dispose();
 });
 test('a scene seam mounted AFTER apply is still picked up', async () => {
