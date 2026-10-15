@@ -14,5 +14,10 @@
   },
   "engines": {
     "node": "^22.19 || >=24"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xiaoxiaohaigui/dsh-tui-rewrite.git"
   }
 }

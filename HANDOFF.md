@@ -10,6 +10,26 @@
 
 范围边界与"明确不做"的事项见 `docs/PLAN.md` 第 0 节。
 
+## 仓库与发布
+
+| 项 | 值 |
+|---|---|
+| GitHub | <https://github.com/xiaoxiaohaigui/dsh-tui-rewrite>（public，MIT） |
+| npm | `dsh-tui-rewrite`（<https://www.npmjs.com/package/dsh-tui-rewrite>） |
+| 发布单元 | `packages/dsh-tui-rewrite/`；仓库根是 private workspace，不发布 |
+| 版本 | 0.0.1，alpha。⛔ R-019 未闭，README 与 npm 页已标注"不要日常使用" |
+
+```bash
+# 发布（必须在包目录里执行；private 已移除，publishConfig.access=public）
+cd packages/dsh-tui-rewrite && npm publish
+
+# 只预览会打进去的文件
+npm pack --dry-run
+```
+
+包名取无作用域的 `dsh-tui-rewrite`：该名字在 npm 上未被占用，
+而 `@deepseek-harness-tui` 属上游、本账号无权发布到该作用域。
+
 ## 环境事实（2026-10-15 实测）
 
 | 项 | 值 |
