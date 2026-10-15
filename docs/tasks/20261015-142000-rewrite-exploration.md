@@ -1,8 +1,8 @@
 # 20261015-142000-rewrite-exploration - 初期探索：需求边界与开发路径
 
-- 状态：进行中（阶段 0、1a 已完成；代码审查已完成，待处理 REVIEW.md 的未关闭问题后进入阶段 1b/1c）
+- 状态：进行中（阶段 0、1a 已完成；代码审查的 11 条未关闭问题**已全部修复并关闭**，下一步进入 1b/1c）
 - 负责人：DSH agent 会话（2026-10-15）
-- 更新时间：2026-10-15 17:50 +0800
+- 更新时间：2026-10-15 18:40 +0800
 - 来源：用户请求「阅读 HANDOFF.md，进行初期探索，明确需求和发展路径」；上源 `C:/Users/86198/dsh-rewrite-poc/HANDOFF.md`
 - 工作位置：`D:/dsh-tui-rewrite`（`git init` 已完成；基线提交 `6f706e4` 已于 2026-10-15 落地，此前「无提交不可回退」的风险已消除）
 
@@ -52,20 +52,29 @@
   P1 → P2 → P3 顺序修审查条目，每条一个提交。R-004 的记录修正已落到 `PLAN.md`
   与 `docs/explore/phase1a-results.md`：1a 一节不再声称「不做编辑与提交」，
   1b 记为「仅剩 hover」，1c 记为「仅剩 Home/End 且无真机记录」。
-- 自动化侧基线：60 项测试全绿 —— 新增
-  `scene-render.test.mjs`（13 项，模拟 hook 运行时直接驱动场景组件）、
+- 自动化侧基线：**81 项测试全绿**（修复轮次时为 60 项）—— 1a 阶段新增
+  `scene-render.test.mjs`（模拟 hook 运行时直接驱动场景组件）、
   `seam.test.mjs`（10 项，晚挂载轮询）、`debug.test.mjs`（3 项，现场证据通道的行形状）；
   `plugin.test.mjs` 增补 resolver / 场景注册 / 命令双路径 / 开场景失败可见 / 晚挂载端到端。
   实现中发现并修掉四处会让验收项直接失败的缺陷（宿主不给场景 session、
   条件 return 错位 hook 槽、ref 镜像两套账、缝合点晚挂载静默失效），记录见
   [docs/explore/phase1a-results.md](../explore/phase1a-results.md)。
+  修复轮次新增 21 项：输入 handler 直接用例 6 项（此前零覆盖）、畸形改写事件 1 项、
+  实例状态隔离与自检归属 2 项、空草稿拒绝 2 项、镜像稳定性 2 项、
+  非数组 content 降级 1 项、渲染期无副作用 1 项、声明文件一致性 6 项。
 - 阻塞项：无。`dsh --profile dsh-tui` 在本机静默挂起，与本项目无因果（profile 完好、
   组合正常、当时无本项目任何行），已改用 `dst` 并记入决策文件；该问题独立跟踪。
-- 下一步（新会话）：先读 [REVIEW.md](../../REVIEW.md)，按 P1 → P2 → P3 顺序修未关闭条目
-  （R-001 是唯一会丢用户数据的缺陷，且属 1c 路径，列为第一项）；每条修完按
-  「修复 → 验证 → 移入 Closed」更新该文件。之后再推进 1b/1c：1b 补 hover 局部 state +
-  稳定 key 与滚轮/视口验收，1c 补 Home/End 并做真机提交验证（phase1a-results 第 3.2 节
-  已留该要求），见 [docs/PLAN.md](../PLAN.md) 阶段 1b/1c。条目细节不在此复制。
+- **审查问题修复已完成（2026-10-15 新会话）**：REVIEW.md 的 11 条未关闭问题全部修复并
+  移入 Closed（`Open` → `Verified`），Active 区现为空。R-001 已按预期列为第一项。
+  每条一个提交，逐条验证结果与提交号见 [REVIEW.md](../../REVIEW.md) 的「修复轮次」一节，
+  条目细节不在此复制。自动化基线 **81 项全绿**（审查基线 60 项；修复过程新增 21 项），
+  `npm run report` 5 项 RESULT 全 true。
+  修复轮次顺带修正了记录与代码的双向不一致（R-004）：1a 不再声称「不做编辑与提交」，
+  1b 记为「仅剩 hover」，1c 记为「仅剩 Home/End 且无真机记录」，见 PLAN 对应阶段。
+- 下一步：推进 1b/1c —— 1b 补 hover 局部 state（行 key 已稳定）并做滚轮/视口真机验收；
+  1c 补 Home/End 并做真机提交验证（phase1a-results 第 3.2 节已留该要求）。
+  新增键位必须沿用镜像纪律并在 `scene-render.test.mjs` 补「同一 chunk 内连按」用例，
+  否则会重现 R-001 那一类丢键缺陷。见 [docs/PLAN.md](../PLAN.md) 阶段 1b/1c。
 - 真机挂载：**已回滚**（2026-10-15 17:27，`node test-harness/unmount.mjs`）——
   junction 与 patch 行均已移除，`dsh --profile dsh-tui --dump-config` 中不再出现本插件行，
   patch 仍可正常组合。挂载前的备份 `cordis.patch.yml.bak-rewrite-mount-*` 保留。
