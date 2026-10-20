@@ -24,6 +24,7 @@ const MODULES = [
   { specifier: 'dsh-tui-rewrite/scene', declaration: 'scene.d.ts' },
   { specifier: 'dsh-tui-rewrite/debug', declaration: 'debug.d.ts' },
   { specifier: 'dsh-tui-rewrite/seam', declaration: 'seam.d.ts' },
+  { specifier: 'dsh-tui-rewrite/persist', declaration: 'persist.d.ts' },
 ];
 
 /** Resolve a declaration file through the package's real install location. */

@@ -28,7 +28,8 @@
  * @module dsh-tui-rewrite
  */
 import { REWRITE_EVENT_TYPE, rewriteProjection, setProjectionDiagnostics, rewriteSkips } from './projection.js';
-import { SCENE_ID, RewriteScene, setSessionResolver } from './scene.js';
+import { REWRITE_RECORD_TYPE, appendRewrite, restoreIgnorableWriteGuard, rewriteWriteStatus } from './persist.js';
+import { SCENE_ID, RewriteScene, setSessionResolver, setRewriteSubmitter } from './scene.js';
 import { registerSeamWithRetry, whenSeamMounted } from './seam.js';
 import { debugLog, debugEnabled } from './debug.js';
 
@@ -49,7 +50,7 @@ export const COMMAND_CONTRIBUTION_ID = 'dsh-tui-rewrite.rewrite';
 /** Default entry chord for the scene. */
 export const SHORTCUT_COMBO = 'alt+r';
 
-export { REWRITE_EVENT_TYPE, rewriteProjection, SCENE_ID };
+export { REWRITE_EVENT_TYPE, REWRITE_RECORD_TYPE, rewriteProjection, SCENE_ID };
 export { whenSeamMounted, registerSeamWithRetry, SEAM_BUDGET_MS } from './seam.js';
 
 /**
@@ -105,29 +106,46 @@ function registerProjection(ctx, state) {
     logSafely(ctx, 'warn', name + ': ' + message);
     debugLog('rewrite skipped', { reason: message });
   });
-  ctx.effect(() => {
-    let dispose;
-    try {
-      dispose = ctx.sessions.registerMessageProjection(rewriteProjection);
-      state.ok = true;
-      state.reason = undefined;
-      logSafely(ctx, 'info', name + ': projection "' + REWRITE_EVENT_TYPE + '" registered');
-    } catch (error) {
-      state.ok = false;
-      state.reason = error instanceof Error ? error.message : String(error);
-      logSafely(ctx, 'warn',
-        name + ': projection "' + REWRITE_EVENT_TYPE + '" was REFUSED (' + state.reason
-          + '); every rewrite is inert until that is resolved');
-      return () => { state.ok = false; };
-    }
-    return async () => {
-      // Clear first: sessions may still be derived while the fiber unwinds.
-      state.ok = false;
+  // Two event types, one body: the official `plugin:` record type for new
+  // writes, and the legacy type so sessions written before R-019 was fixed
+  // still get their rewrite. The record registration is the load-bearing one;
+  // a refused legacy registration only turns off reading old logs here.
+  for (const definition of [
+    { type: REWRITE_RECORD_TYPE, primary: true },
+    { type: REWRITE_EVENT_TYPE, primary: false },
+  ]) {
+    ctx.effect(() => {
+      let dispose;
       try {
-        await dispose();
-      } catch { /* teardown is best-effort by contract */ }
-    };
-  });
+        dispose = ctx.sessions.registerMessageProjection({
+          type: definition.type,
+          project: rewriteProjection.project,
+        });
+        if (definition.primary) {
+          state.ok = true;
+          state.reason = undefined;
+        }
+        logSafely(ctx, 'info', name + ': projection "' + definition.type + '" registered');
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        if (definition.primary) {
+          state.ok = false;
+          state.reason = detail;
+        }
+        logSafely(ctx, 'warn',
+          name + ': projection "' + definition.type + '" was REFUSED (' + detail + ')'
+            + (definition.primary ? '; every rewrite is inert until that is resolved' : '; legacy rewrite logs will not apply'));
+        return () => { if (definition.primary) state.ok = false; };
+      }
+      return async () => {
+        // Clear first: sessions may still be derived while the fiber unwinds.
+        if (definition.primary) state.ok = false;
+        try {
+          await dispose();
+        } catch { /* teardown is best-effort by contract */ }
+      };
+    });
+  }
 }
 
 /**
@@ -271,7 +289,7 @@ function reportLateMountState(ctx, state) {
       if (state.shortcut) seen.shortcut = true;
       if (seen.scene && seen.command && seen.shortcut) {
         stop();
-        debugLog('entry points verified', { ...seen, rewritesSkipped: rewriteSkips() });
+        debugLog('entry points verified', { ...seen, rewritesSkipped: rewriteSkips(), write: rewriteWriteStatus() });
       }
     }, 250);
     // Bounded: an entry point that never lands is a real failure and must not
@@ -344,6 +362,19 @@ export function createPlugin(config = {}) {
     } catch (error) {
       state.ok = false;
       state.reason = 'registerProjection: ' + (error instanceof Error ? error.message : String(error));
+    }
+    try {
+      // The scene owns no cordis context; hand it the write path that can put
+      // `ignorable` on the persisted event (official record API, or the guard).
+      setRewriteSubmitter((session, data) => appendRewrite(ctx, session, data));
+    } catch (error) {
+      logSafely(ctx, 'warn', name + ': rewrite writer unavailable (' + (error instanceof Error ? error.message : String(error)) + ')');
+    }
+    try {
+      // The guard is installed lazily on the first write; this is its owner.
+      ctx.effect(() => restoreIgnorableWriteGuard);
+    } catch (error) {
+      logSafely(ctx, 'warn', name + ': could not scope the persistence guard (' + (error instanceof Error ? error.message : String(error)) + ')');
     }
     try {
       registerScene(ctx, config, state);

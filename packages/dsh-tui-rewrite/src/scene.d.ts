@@ -5,6 +5,7 @@
  */
 import type { TuiSceneProps } from '@deepseek-harness-tui/dsh-tui/scenes';
 import type { Session } from '@deepseek-ai/dsh-session';
+import type { RewriteEventData } from './projection.js';
 
 /** Scene id (kebab-case, per the tuiScenes grammar). */
 export declare const SCENE_ID: 'dsh-tui-rewrite-scene';
@@ -14,6 +15,13 @@ export declare const SCENE_ID: 'dsh-tui-rewrite-scene';
  * again is allowed so a test can drive the scene without a cordis context.
  */
 export declare function setSessionResolver(resolve: ((sessionId: string) => unknown) | undefined): void;
+
+/**
+ * Publish the write path for a committed rewrite. main.js installs the path
+ * that can guarantee `ignorable` on the persisted event; a test can install a
+ * spy, and `undefined` restores the plain in-memory append.
+ */
+export declare function setRewriteSubmitter(submit: ((session: Session, data: RewriteEventData) => unknown) | undefined): void;
 
 /**
  * The live session the UI is bound to, or `undefined` when it cannot be reached.

@@ -20,6 +20,7 @@ import { Context } from '@deepseek-ai/cordis';
 import { SessionStore, KNOWN_SESSION_EVENT_TYPES } from '@deepseek-ai/dsh-session';
 import pluginDefault, { name as pluginName, inject as pluginInject, projectionStatus } from 'dsh-tui-rewrite';
 import { REWRITE_EVENT_TYPE } from 'dsh-tui-rewrite/projection';
+import { REWRITE_RECORD_TYPE } from 'dsh-tui-rewrite/persist';
 import { loadSampleSession, openSession, textOf } from '../tools.mjs';
 // eslint-disable-next-line no-duplicate-imports -- the row builder below needs it
 import { createPlugin } from 'dsh-tui-rewrite';
@@ -120,8 +121,10 @@ test('mounting the store row makes ctx.sessions resolvable', async () => {
 
 test('the plugin registers its projection exactly once', async () => {
   const { root, row } = await boot();
-  const owners = root.sessions.messageProjections.filter(projection => projection.type === REWRITE_EVENT_TYPE);
-  assert.equal(owners.length, 1);
+  const legacy = root.sessions.messageProjections.filter(projection => projection.type === REWRITE_EVENT_TYPE);
+  const records = root.sessions.messageProjections.filter(projection => projection.type === REWRITE_RECORD_TYPE);
+  assert.equal(legacy.length, 1, 'the legacy type stays readable for pre-fix logs');
+  assert.equal(records.length, 1, 'new writes have exactly one owner');
   assert.equal(projectionStatus(row).registered, true);
   assert.equal(projectionStatus(row).applied, true);
 });
@@ -133,7 +136,9 @@ test('a second owner of the same event type is refused, not displaced', async ()
   const foreign = new Context();
   foreign.plugin(SessionStore);
   await settle();
+  // Both types the plugin would register, so neither registration can land.
   foreign.sessions.registerMessageProjection({ type: REWRITE_EVENT_TYPE, project: () => new Map() });
+  foreign.sessions.registerMessageProjection({ type: REWRITE_RECORD_TYPE, project: () => new Map() });
   const before = foreign.sessions.messageProjections.length;
   const refused = await budgetRow({ budgetMs: 300 });
   const host = foreign.plugin(refused);
@@ -183,7 +188,7 @@ test('two instances in one process keep separate status (R-008)', async () => {
   const foreign = new Context();
   foreign.plugin(SessionStore);
   await settle();
-  foreign.sessions.registerMessageProjection({ type: REWRITE_EVENT_TYPE, project: () => new Map() });
+  foreign.sessions.registerMessageProjection({ type: REWRITE_RECORD_TYPE, project: () => new Map() });
   const refused = await budgetRow({ budgetMs: 300 });
   const refusedHost = foreign.plugin(refused);
   await settle();

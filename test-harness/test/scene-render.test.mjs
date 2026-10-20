@@ -17,13 +17,14 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  RewriteScene, SCENE_ID, setSessionResolver, sessionFor, collectTargets, messageText, lineStartOf,
-  lineEndOf, useMirrorRefs,
+  RewriteScene, SCENE_ID, setSessionResolver, setRewriteSubmitter, sessionFor, collectTargets, messageText,
+  lineStartOf, lineEndOf, useMirrorRefs,
 } from 'dsh-tui-rewrite/scene';
+import { REWRITE_RECORD_TYPE } from 'dsh-tui-rewrite/persist';
 import { openSession, sessionWithReplies } from '../tools.mjs';
 
 // A leaked resolver would make the next test read another test's session.
-after(() => { setSessionResolver(undefined); });
+after(() => { setSessionResolver(undefined); setRewriteSubmitter(undefined); });
 
 /** Deepest-first text content of a rendered tree, one string per Text node. */
 function texts(node, out = []) {
@@ -469,7 +470,7 @@ test('Esc then Ctrl+S in ONE chunk does not append the cancelled draft', async (
   press(runtime, '', { escape: true });    // cancel ...
   press(runtime, 's', { ctrl: true });     // ... and submit, same chunk
 
-  const appended = session.snapshotEvents().filter(event => event.type === 'dsh-tui-rewrite/message');
+  const appended = session.snapshotEvents().filter(event => event.type === REWRITE_RECORD_TYPE);
   assert.deepEqual(appended, [], 'a cancelled edit must not be appended');
   assert.equal(session.surface.nodes.length, 1, 'the surface must be untouched');
 });
@@ -489,10 +490,36 @@ test('Ctrl+S in ONE chunk after an edit submits the text as edited', async () =>
 
   // The payload is the contract: these sessions carry no projection (that round
   // trip is covered in plugin.test.mjs), so the event is what must be right.
-  const appended = session.snapshotEvents().filter(event => event.type === 'dsh-tui-rewrite/message');
+  const appended = session.snapshotEvents().filter(event => event.type === REWRITE_RECORD_TYPE);
   assert.equal(appended.length, 1);
   assert.equal(appended[0].data.content, 'HELLOXY');
   assert.equal(appended[0].data.targetSeq, session.surface.nodes[0]);
+});
+
+test('the scene commits through the installed write path, not a bare append', async () => {
+  // main.js installs the path that can put `ignorable` on the persisted event
+  // (R-019). A scene that kept calling session.append would silently bypass it
+  // and write an unresumable session again.
+  const session = await sessionWithReplies(['HELLO']);
+  setSessionResolver(() => session);
+  const calls = [];
+  setRewriteSubmitter((target, data) => { calls.push({ id: target.id, data }); return { seq: 99 }; });
+  const runtime = makeRenderer();
+  runtime.render({ sessionId: 's1' });
+
+  press(runtime, '', { return: true });
+  press(runtime, 'NEW');
+  press(runtime, 's', { ctrl: true });
+
+  assert.equal(calls.length, 1, 'the installed submitter must be the only write path');
+  assert.deepEqual(calls[0].data, { targetSeq: session.surface.nodes[0], content: 'HELLONEW' });
+  assert.deepEqual(
+    session.snapshotEvents().filter(event => event.type === REWRITE_RECORD_TYPE),
+    [],
+    'the scene must not append behind the submitter',
+  );
+  assert.match(runtime.render({ sessionId: 's1' }).text, /rewrote seq/u);
+  setRewriteSubmitter(undefined);
 });
 
 test('a draft emptied in the editor is refused instead of appended', async () => {
@@ -509,7 +536,7 @@ test('a draft emptied in the editor is refused instead of appended', async () =>
   press(runtime, 's', { ctrl: true });                                      // submit anyway
 
   assert.deepEqual(
-    session.snapshotEvents().filter(event => event.type === 'dsh-tui-rewrite/message'),
+    session.snapshotEvents().filter(event => event.type === REWRITE_RECORD_TYPE),
     [],
     'an empty draft must not become a rewrite event',
   );
@@ -531,7 +558,7 @@ test('a whitespace-only draft is refused too, and a non-empty one still works', 
   runtime.render({ sessionId: 's1' });
   press(runtime, 's', { ctrl: true });
   assert.deepEqual(
-    session.snapshotEvents().filter(event => event.type === 'dsh-tui-rewrite/message'),
+    session.snapshotEvents().filter(event => event.type === REWRITE_RECORD_TYPE),
     [],
   );
 
@@ -539,7 +566,7 @@ test('a whitespace-only draft is refused too, and a non-empty one still works', 
   press(runtime, '', { return: true });
   press(runtime, 'ok');
   press(runtime, 's', { ctrl: true });
-  const appended = session.snapshotEvents().filter(event => event.type === 'dsh-tui-rewrite/message');
+  const appended = session.snapshotEvents().filter(event => event.type === REWRITE_RECORD_TYPE);
   assert.equal(appended.length, 1);
   assert.equal(appended[0].data.content, 'HELLOok');
 });
@@ -830,10 +857,8 @@ test('collectTargets reads the projected text once a reply has been rewritten', 
       },
     },
   }], { plugin: true });
-  const { REWRITE_EVENT_TYPE } = await import('dsh-tui-rewrite/projection');
-
   const seq = session.surface.nodes[0];
-  session.append(REWRITE_EVENT_TYPE, { targetSeq: seq, content: 'REWRITTEN TEXT' });
+  session.append(REWRITE_RECORD_TYPE, { targetSeq: seq, content: 'REWRITTEN TEXT' });
   const target = collectTargets(session).find(item => item.seq === seq);
   assert.equal(target.original, 'REWRITTEN TEXT');
   assert.equal(target.preview, 'REWRITTEN TEXT');

@@ -7,7 +7,7 @@
 import { Context } from '@deepseek-ai/cordis';
 import { SessionStore } from '@deepseek-ai/dsh-session';
 import { createPlugin, projectionStatus } from 'dsh-tui-rewrite';
-import { REWRITE_EVENT_TYPE } from 'dsh-tui-rewrite/projection';
+import { REWRITE_RECORD_TYPE } from 'dsh-tui-rewrite/persist';
 import { loadSampleSession, textOf } from './tools.mjs';
 
 const settle = (ms = 30) => new Promise(resolve => setTimeout(resolve, ms));
@@ -39,7 +39,7 @@ line('log holds     : ' + JSON.stringify(textOf(session.eventAt(targetSeq).data.
 line('');
 
 const NEW = '<< rewritten by dsh-tui-rewrite >>';
-const event = session.append(REWRITE_EVENT_TYPE, { targetSeq, content: NEW });
+const event = session.append(REWRITE_RECORD_TYPE, { targetSeq, content: NEW });
 const after = session.deriveMessages();
 
 line('appended      : seq ' + event.seq + ' type=' + event.type);
@@ -56,4 +56,4 @@ line('RESULT no-surfaceop-on-event   = ' + (event.surfaceOp === undefined && eve
 
 await host.dispose();
 await settle();
-line('RESULT projection-unwound      = ' + (root.sessions.messageProjections.some(p => p.type === REWRITE_EVENT_TYPE) === false));
+line('RESULT projection-unwound      = ' + (root.sessions.messageProjections.some(p => p.type === REWRITE_RECORD_TYPE) === false));

@@ -79,6 +79,7 @@ export declare function createPlugin(config?: PluginConfig): PluginRow;
 export declare function projectionStatus(plugin?: PluginRow): ProjectionStatus;
 
 export { REWRITE_EVENT_TYPE, rewriteProjection } from './projection.js';
+export { REWRITE_RECORD_TYPE } from './persist.js';
 export { registerSeamWithRetry, whenSeamMounted } from './seam.js';
 export type { RewriteEventData, RewriteSkip, RewriteSkipReason } from './projection.js';
 export type { SeamContext, SeamTimers } from './seam.js';

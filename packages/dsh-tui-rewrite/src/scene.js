@@ -42,7 +42,7 @@
  * @module dsh-tui-rewrite/scene
  */
 import { jsx, jsxs } from '@deepseek-harness-tui/dsh-tui/jsx-runtime';
-import { REWRITE_EVENT_TYPE } from './projection.js';
+import { REWRITE_RECORD_TYPE } from './persist.js';
 import { debugLog } from './debug.js';
 
 /** Scene id (kebab-case, per the tuiScenes grammar). */
@@ -88,6 +88,32 @@ export function sessionFor(sessionId) {
     debugLog('sessionResolver threw', { sessionId, error: String(error) });
     return undefined;
   }
+}
+
+/**
+ * How the scene commits a rewrite. Installed by main.js, which owns the cordis
+ * context the persistence guard needs; `undefined` means "not wired" and the
+ * default path appends the record event through the session (in-memory tests,
+ * and the honest fallback when a composition has no persistence service).
+ *
+ * @type {((session: import('@deepseek-ai/dsh-session').Session, data: {targetSeq: number, content: string}) => unknown) | undefined}
+ */
+let rewriteSubmitter;
+
+/**
+ * Publish the rewrite write path. Called once from the plugin's `apply`;
+ * swapping it again is allowed so a test can observe the submit.
+ *
+ * @param {((session: import('@deepseek-ai/dsh-session').Session, data: {targetSeq: number, content: string}) => unknown) | undefined} submit
+ */
+export function setRewriteSubmitter(submit) {
+  rewriteSubmitter = submit;
+}
+
+/** The one write path the scene uses, with the no-context fallback. */
+function writeRewrite(session, data) {
+  if (rewriteSubmitter !== undefined) return rewriteSubmitter(session, data);
+  return session.append(REWRITE_RECORD_TYPE, data);
 }
 
 /** Code points, so astral characters edit as one unit. */
@@ -349,8 +375,9 @@ export function RewriteScene(props) {
       return;
     }
     try {
-      const event = session.append(REWRITE_EVENT_TYPE, { targetSeq: target.seq, content: text });
-      debugLog('rewrite appended', { targetSeq: target.seq, eventSeq: event.seq, chars: units(text).length });
+      const event = writeRewrite(session, { targetSeq: target.seq, content: text });
+      const eventSeq = event?.seq;
+      debugLog('rewrite appended', { targetSeq: target.seq, eventSeq, chars: units(text).length });
       leaveEdit('rewrote seq ' + target.seq + ' — the model sees the new text, the log keeps the original');
       writeTargets(collectTargets(session));
     } catch (error) {

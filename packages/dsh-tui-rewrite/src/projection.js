@@ -61,13 +61,13 @@ export function applyRewrite(previous, content) {
 
 /** Reasons a rewrite event is left alone, with the detail each one reports. */
 const SKIP_REASONS = {
-  'bad-target': detail => REWRITE_EVENT_TYPE + ': targetSeq must be a non-negative safe integer, got '
+  'bad-target': detail => detail.type + ': targetSeq must be a non-negative safe integer, got '
     + JSON.stringify(detail.target) + ' - event left alone',
-  'no-target-event': detail => REWRITE_EVENT_TYPE + ': no event at seq ' + detail.target
+  'no-target-event': detail => detail.type + ': no event at seq ' + detail.target
     + ' (the fold starts at ' + detail.baseSeq + '), so the rewrite cannot resolve - event left alone',
-  'not-derivable': detail => REWRITE_EVENT_TYPE + ': seq ' + detail.target
+  'not-derivable': detail => detail.type + ': seq ' + detail.target
     + ' produces no model-visible message - event left alone',
-  'bad-content': detail => REWRITE_EVENT_TYPE + ': content must be a string, got '
+  'bad-content': detail => detail.type + ': content must be a string, got '
     + typeof detail.content + ' - event left alone',
 };
 
@@ -139,24 +139,25 @@ export function resetRewriteSkips() {
 export const rewriteProjection = {
   type: REWRITE_EVENT_TYPE,
   project(event, ctx) {
+    const type = event.type;
     const target = event.data?.targetSeq;
     if (typeof target !== 'number' || !Number.isSafeInteger(target) || target < 0) {
-      reportSkip('bad-target', { target });
+      reportSkip('bad-target', { type, target });
       return new Map();
     }
     const targetEvent = ctx.events[target - ctx.baseSeq];
     if (targetEvent === undefined) {
-      reportSkip('no-target-event', { target, baseSeq: ctx.baseSeq });
+      reportSkip('no-target-event', { type, target, baseSeq: ctx.baseSeq });
       return new Map();
     }
     const content = event.data.content;
     if (typeof content !== 'string') {
-      reportSkip('bad-content', { content });
+      reportSkip('bad-content', { type, content });
       return new Map();
     }
     const previous = deriveEventMessage(targetEvent, ctx.messages);
     if (previous === null || previous === undefined) {
-      reportSkip('not-derivable', { target });
+      reportSkip('not-derivable', { type, target });
       return new Map();
     }
     return new Map([[target, applyRewrite(previous, content)]]);
