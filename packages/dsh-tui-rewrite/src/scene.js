@@ -492,6 +492,12 @@ export function RewriteScene(props) {
     const chars = units(draft);
     const caretAt = Math.min(caret, chars.length);
     const row = rowOf(chars, caretAt);
+    const lineStart = lineStartOf(chars, caretAt);
+    // Code-point column inside the line, 1-based for the header. The caret is
+    // painted INLINE at this position: the old rendering put a fixed ▏ at the
+    // start of the caret row, so left/right/Home/End changed nothing the user
+    // could see and the editor could not be exercised on a real terminal.
+    const column = caretAt - lineStart;
     const lines = draft.split('\n');
     const first = Math.max(0, Math.min(Math.max(0, lines.length - 1), row - Math.floor(EDIT_ROWS / 2)));
     const visible = lines.slice(first, first + EDIT_ROWS);
@@ -499,7 +505,7 @@ export function RewriteScene(props) {
     return jsxs(Box, {
       flexDirection: 'column',
       children: [
-        jsx(Text, { bold: true, children: ' rewrite · editing seq ' + (target === undefined ? '?' : target.seq) + '  (line ' + (row + 1) + '/' + lines.length + ')' }),
+        jsx(Text, { bold: true, children: ' rewrite · editing seq ' + (target === undefined ? '?' : target.seq) + '  (line ' + (row + 1) + '/' + lines.length + ', col ' + (column + 1) + ')' }),
         jsx(Text, { dimColor: true, children: ' Enter newline · Ctrl+S submit · Esc cancel' }),
         jsx(Box, {
           flexDirection: 'column',
@@ -509,10 +515,19 @@ export function RewriteScene(props) {
           height: EDIT_ROWS + 2,
           children: visible.map((line, offset) => {
             const absolute = first + offset;
+            if (absolute === row) {
+              const lineChars = units(line);
+              const before = lineChars.slice(0, column).join('');
+              const after = lineChars.slice(column).join('');
+              return jsx(Text, {
+                key: 'line-' + absolute,
+                color: 'suggestion',
+                children: ' ' + before + '▏' + after,
+              });
+            }
             return jsx(Text, {
               key: 'line-' + absolute,
-              ...(absolute === row ? { color: 'suggestion' } : {}),
-              children: (absolute === row ? '▏' : ' ') + (line.length === 0 ? ' ' : line),
+              children: ' ' + (line.length === 0 ? ' ' : line),
             });
           }),
         }),

@@ -210,7 +210,10 @@ function press(runtime, input, extra = {}) {
   });
 }
 
-/** The edit pane's caret line, i.e. what the user is actually typing into. */
+/**
+ * The edit pane's caret line. The scene paints ▏ INLINE at the caret column,
+ * so a match also tells us where within the line the caret sits.
+ */
 function caretLine(view) {
   return view.text.split('\n').find(line => line.includes('▏'));
 }
@@ -590,14 +593,15 @@ test('Home and End move within the caret LINE, not the buffer', async () => {
 
   press(runtime, '', { home: true });            // line 3 "F" starts at unit 7
   press(runtime, '', { home: true });            // already there: a no-op, not a jump to unit 0
-  assert.equal(header(), ' rewrite · editing seq 0  (line 3/3)');
+  assert.equal(header(), ' rewrite · editing seq 0  (line 3/3, col 1)');
   assert.match(caretLine(runtime.render({ sessionId: 's1' })), /▏F/u);
 
   // End on the LAST line has no terminator to stop at, so it reaches the end of
   // the buffer - one step further than Home put us.
   press(runtime, '', { end: true });
   press(runtime, '', { rightArrow: true });      // already at the end: still the end
-  assert.match(caretLine(runtime.render({ sessionId: 's1' })), /▏F/u);
+  assert.equal(header(), ' rewrite · editing seq 0  (line 3/3, col 2)');
+  assert.match(caretLine(runtime.render({ sessionId: 's1' })), /F▏/u);
 
   // Two steps left: unit 7 is the first unit of line 3 (a position belongs to
   // the line it opens), and unit 6 is the newline that TERMINATES line 2. The
@@ -606,15 +610,15 @@ test('Home and End move within the caret LINE, not the buffer', async () => {
   // the buffer's), and End must come back to unit 6 (line 2's terminator, not
   // one step past it into line 3).
   press(runtime, '', { leftArrow: true });
-  assert.equal(header(), ' rewrite · editing seq 0  (line 3/3)', 'unit 7 opens line 3');
+  assert.equal(header(), ' rewrite · editing seq 0  (line 3/3, col 1)', 'unit 7 opens line 3');
   press(runtime, '', { leftArrow: true });
-  assert.equal(header(), ' rewrite · editing seq 0  (line 2/3)');
+  assert.equal(header(), ' rewrite · editing seq 0  (line 2/3, col 3)');
   press(runtime, '', { home: true });
   assert.match(caretLine(runtime.render({ sessionId: 's1' })), /▏DE/u);
   press(runtime, '', { end: true });
-  assert.equal(header(), ' rewrite · editing seq 0  (line 2/3)');
+  assert.equal(header(), ' rewrite · editing seq 0  (line 2/3, col 3)');
   press(runtime, '', { home: true });
-  assert.equal(header(), ' rewrite · editing seq 0  (line 2/3)');
+  assert.equal(header(), ' rewrite · editing seq 0  (line 2/3, col 1)');
   assert.match(caretLine(runtime.render({ sessionId: 's1' })), /▏DE/u);
 });
 
@@ -631,9 +635,9 @@ test('End then Down keeps the column, because End lands on the terminator', asyn
   press(runtime, '', { end: true });             // End ends it - column 4, where Down will land
   press(runtime, '', { downArrow: true });
 
-  // Landed in the SAME column on "XY". One column short (the pre-fix behaviour)
-  // would put the caret before the Y.
-  assert.match(caretLine(runtime.render({ sessionId: 's1' })), /▏XY/u);
+  // Landed in the SAME column on "XY" - at its end (column 3), not one short.
+  assert.equal(runtime.render({ sessionId: 's1' }).text.split('\n')[0], ' rewrite · editing seq 0  (line 2/3, col 3)');
+  assert.match(caretLine(runtime.render({ sessionId: 's1' })), /XY▏/u);
 });
 
 test('Home then End in ONE chunk resolves against the draft, not the render', async () => {
@@ -648,11 +652,11 @@ test('Home then End in ONE chunk resolves against the draft, not the render', as
 
   press(runtime, '', { home: true });            // caret 3 -> 0 ...
   press(runtime, '', { end: true });             // ... -> 3, in the same chunk
-  assert.match(caretLine(runtime.render({ sessionId: 's1' })), /▏ABC/u);
+  assert.match(caretLine(runtime.render({ sessionId: 's1' })), /ABC▏/u);
 
   press(runtime, '', { home: true });
   press(runtime, 'X');                           // insert AT the line start
-  assert.match(caretLine(runtime.render({ sessionId: 's1' })), /▏X/u);
+  assert.match(caretLine(runtime.render({ sessionId: 's1' })), /X▏ABC/u);
 });
 
 test('a list row carries the hover handlers, and hover is component-local state', async () => {
