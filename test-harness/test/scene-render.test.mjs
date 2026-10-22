@@ -84,12 +84,13 @@ function findWheelBox(node) {
  * Each `render()` is one render pass; state persists in call order, the way
  * React keeps it per hook slot.
  */
-function makeRenderer() {
+function makeRenderer(options = {}) {
   const state = [];
   const memos = [];
   const effects = [];
   const inputs = [];
   const pending = [];
+  const cursorDeclarations = [];
   let committed = [];
   let cursor = 0;
   let closed = false;
@@ -152,6 +153,16 @@ function makeRenderer() {
     // handler is gone). Keeping the old ones would let a test drive a handler
     // whose captured state is a render stale - and would run every key twice.
     useInput: handler => { inputs.length = 0; inputs.push(handler); },
+    ...(options.nativeCursor === true ? {
+      // The scene prefers the host's declared native cursor so the caret does
+      // not consume a text cell. These stubs record what it declares; the real
+      // hooks add the terminal-specific parts.
+      useNativeCursor: () => true,
+      useDeclaredCursor: declaration => {
+        cursorDeclarations.push(declaration);
+        return () => {};
+      },
+    } : {}),
   };
   const pass = channel => {
     cursor = 0;
@@ -191,7 +202,7 @@ function makeRenderer() {
     committed = fresh;
     return dirty ? render(channel) : view;
   };
-  return { render, effects: () => committed, inputs, isClosed: () => closed };
+  return { render, effects: () => committed, inputs, cursorDeclarations, isClosed: () => closed };
 }
 
 /**
@@ -657,6 +668,28 @@ test('Home then End in ONE chunk resolves against the draft, not the render', as
   press(runtime, '', { home: true });
   press(runtime, 'X');                           // insert AT the line start
   assert.match(caretLine(runtime.render({ sessionId: 's1' })), /X▏ABC/u);
+});
+
+test('a native cursor does not take a text cell from the editor', async () => {
+  // The painted fallback inserts ▏ and shifts the line; the host native cursor
+  // must instead be parked on the caret cell, leaving every character in place.
+  const session = await sessionWithReplies(['AB\nCD']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer({ nativeCursor: true });
+  runtime.render({ sessionId: 's1' });
+  press(runtime, '', { return: true });
+
+  const view = runtime.render({ sessionId: 's1' });
+  assert.ok(!view.text.includes('▏'), 'the native caret must not be painted into the text');
+  assert.ok(view.text.includes(' CD'), 'the line text is unchanged');
+  const atEnd = runtime.cursorDeclarations.at(-1);
+  assert.equal(atEnd.active, true);
+  assert.equal(atEnd.visible, true);
+  assert.equal(atEnd.column, 3, 'leading space + "CD"');
+
+  press(runtime, '', { home: true });
+  runtime.render({ sessionId: 's1' });
+  assert.equal(runtime.cursorDeclarations.at(-1).column, 1);
 });
 
 test('a list row carries the hover handlers, and hover is component-local state', async () => {

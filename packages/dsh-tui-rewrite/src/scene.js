@@ -288,6 +288,38 @@ export function RewriteScene(props) {
 
   const bodyRows = Math.max(1, (size.rows ?? 24) - 5);
 
+  // The editor caret must not consume a text cell: inserting a ▏ glyph shifts
+  // every character to its right, which is what made the editor look like it
+  // was "making room" while the caret moved. Prefer the host's declared native
+  // cursor (the same mechanism the prompt input uses); fall back to the painted
+  // glyph only for hosts without that hook.
+  const useDeclaredCursor = ui.useDeclaredCursor;
+  const useNativeCursor = ui.useNativeCursor;
+  const nativeCursor = typeof useNativeCursor === 'function' ? useNativeCursor() : false;
+  const draftChars = draft === undefined ? [] : units(draft);
+  const draftCaret = Math.min(caret, draftChars.length);
+  const draftRow = draft === undefined ? 0 : rowOf(draftChars, draftCaret);
+  const draftLines = draft === undefined ? [] : draft.split('\n');
+  const draftFirst = draft === undefined
+    ? 0
+    : Math.max(0, Math.min(Math.max(0, draftLines.length - 1), draftRow - Math.floor(EDIT_ROWS / 2)));
+  const draftLineStart = draft === undefined ? 0 : lineStartOf(draftChars, draftCaret);
+  const draftColumn = draftCaret - draftLineStart;
+  const draftLineChars = draft === undefined ? [] : units(draftLines[draftRow] ?? '');
+  let draftVisualColumn = 1; // the leading space is part of the rendered line
+  for (let i = 0; i < Math.min(draftColumn, draftLineChars.length); i += 1) {
+    draftVisualColumn += cellWidth(draftLineChars[i].codePointAt(0));
+  }
+  const cursorRef = typeof useDeclaredCursor === 'function'
+    ? useDeclaredCursor({
+      line: 0,
+      column: draftVisualColumn,
+      active: draft !== undefined,
+      visible: nativeCursor,
+    })
+    : undefined;
+  const paintedCaret = cursorRef === undefined || !nativeCursor;
+
   // Reported from an effect, NOT from render: debugLog appends to a file
   // synchronously, and a render can run many times per keystroke. Rendering
   // must stay free of side effects.
@@ -489,17 +521,10 @@ export function RewriteScene(props) {
   }
 
   if (draft !== undefined) {
-    const chars = units(draft);
-    const caretAt = Math.min(caret, chars.length);
-    const row = rowOf(chars, caretAt);
-    const lineStart = lineStartOf(chars, caretAt);
-    // Code-point column inside the line, 1-based for the header. The caret is
-    // painted INLINE at this position: the old rendering put a fixed ▏ at the
-    // start of the caret row, so left/right/Home/End changed nothing the user
-    // could see and the editor could not be exercised on a real terminal.
-    const column = caretAt - lineStart;
-    const lines = draft.split('\n');
-    const first = Math.max(0, Math.min(Math.max(0, lines.length - 1), row - Math.floor(EDIT_ROWS / 2)));
+    const row = draftRow;
+    const column = draftColumn;
+    const lines = draftLines;
+    const first = draftFirst;
     const visible = lines.slice(first, first + EDIT_ROWS);
     const target = targets[selected];
     return jsxs(Box, {
@@ -516,13 +541,24 @@ export function RewriteScene(props) {
           children: visible.map((line, offset) => {
             const absolute = first + offset;
             if (absolute === row) {
-              const lineChars = units(line);
-              const before = lineChars.slice(0, column).join('');
-              const after = lineChars.slice(column).join('');
+              if (paintedCaret) {
+                // Host without a declared native cursor: keep the caret visible,
+                // accepting the one-cell shift (the pre-2026-10-22 behaviour).
+                const lineChars = units(line);
+                const before = lineChars.slice(0, column).join('');
+                const after = lineChars.slice(column).join('');
+                return jsx(Text, {
+                  key: 'line-' + absolute,
+                  color: 'suggestion',
+                  children: ' ' + before + '▏' + after,
+                });
+              }
               return jsx(Text, {
                 key: 'line-' + absolute,
+                ref: cursorRef,
                 color: 'suggestion',
-                children: ' ' + before + '▏' + after,
+                // The trailing blank is the cell the native cursor parks on at EOL.
+                children: ' ' + (line.length === 0 ? ' ' : line) + ' ',
               });
             }
             return jsx(Text, {
