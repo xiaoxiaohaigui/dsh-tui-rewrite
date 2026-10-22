@@ -83,8 +83,8 @@ const dict = {
     zh: ' rewrite · {{count}} 条助手回复 · 会话 {{id}}',
   },
   'scene-hint': {
-    en: ' ↑↓ / jk select · Enter edit · click a row · wheel scrolls · Ctrl+S edit · Esc close',
-    zh: ' ↑↓ / jk 选择 · Enter 编辑 · 点击行 · 滚轮移动 · Ctrl+S 编辑 · Esc 关闭',
+    en: ' ↑↓ select · Enter edit · Esc close',
+    zh: ' ↑↓ 选择 · Enter 编辑 · Esc 关闭',
   },
   'scene-empty': {
     en: ' (no assistant replies with text in this session yet)',

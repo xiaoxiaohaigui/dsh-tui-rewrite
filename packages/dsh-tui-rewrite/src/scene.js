@@ -24,11 +24,13 @@
  * read synchronous ref mirrors, and position edits go through functional
  * setState — the same discipline the reference implementation documents.
  *
- * Keys: arrows/jk move, Enter edits, Esc backs out one layer, Ctrl+S submits,
- * Home/End go to the line bounds inside the editor.
+ * Keys: arrows move, Enter edits, Esc backs out one layer, Ctrl+S submits,
+ * Home/End go to the line bounds inside the editor. Clicking a row opens the
+ * editor on that row; the wheel moves the selection.
  * Enter cannot submit: the editor needs it for newlines, and the host's rule is
  * that only an unmodified Enter commits a modal. Ctrl+S is therefore the submit
- * key, and it is also accepted on a list selection.
+ * key. It is deliberately NOT a way into the editor: Ctrl+S means save, and a
+ * list selection that opened on it would read as a different action.
  *
  * Hover is the ONE piece of view state that does not belong in the mirrors:
  * the mirrors exist for the input handler's decisions, and no key reads the
@@ -492,13 +494,15 @@ export function RewriteScene(props) {
 
     // list mode
     if (key.escape) { close(); return; }
-    if (key.ctrl && input === 's') { beginEdit(mirrors.targets.current[mirrors.selected.current]); return; }
     if (mirrors.targets.current.length === 0) return;
     const step = delta => {
       choose(Math.max(0, Math.min(mirrors.targets.current.length - 1, mirrors.selected.current + delta)));
     };
-    if (key.upArrow || input === 'k') step(-1);
-    else if (key.downArrow || input === 'j') step(1);
+    // Arrows and Enter only. Typing in the list must not act: `j`/`k` used to
+    // move the selection, and Ctrl+S used to open the editor, but both made the
+    // list respond to letters that mean something else everywhere else.
+    if (key.upArrow) step(-1);
+    else if (key.downArrow) step(1);
     else if (key.return) beginEdit(mirrors.targets.current[mirrors.selected.current]);
   });
 
@@ -590,9 +594,7 @@ export function RewriteScene(props) {
         // the effect above. Scrolling the camera on its own was a second driver
         // of the same state: the follow effect immediately recentres the
         // selection, so a wheel notch scrolled nowhere the moment the selected
-        // row was off screen. One driver, one scroll position. (The hint above
-        // still promises that the wheel "scrolls" - which is what the user sees
-        // the list do.)
+        // row was off screen. One driver, one scroll position.
         onWheel: event => {
           const delta = wheelRows(event.deltaY ?? 0, event.deltaX ?? 0);
           if (delta === 0) return;
@@ -608,10 +610,15 @@ export function RewriteScene(props) {
               key: 'target-' + target.seq,
               flexDirection: 'column',
               flexShrink: 0,
-              // Selection wins: it is the row Enter and Ctrl+S act on.
+              // Selection wins: it is the row Enter acts on.
               ...(isSelected ? { backgroundColor: 'selectionBg' }
                 : isHovered ? { backgroundColor: 'userMessageBackgroundHover' } : {}),
-              onClick: () => choose(index),
+              onClick: () => {
+                // A click selects AND edits: the pointer should not need a
+                // second Enter after the row is already under it.
+                choose(index);
+                beginEdit(target);
+              },
               onMouseEnter: () => setHoverSeq(target.seq),
               // Only retract the hover if this row is still the hovered one: a
               // leave and an enter of the same pointer move land in ONE React

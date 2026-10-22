@@ -705,6 +705,7 @@ test('the scene copy follows the host language', async () => {
   const channel = { sessionId: 's1', configuredLang: 'zh' };
   try {
     assert.match(runtime.render(channel).text, /条助手回复/u);
+    assert.match(runtime.render(channel).text, /↑↓ 选择 · Enter 编辑 · Esc 关闭/u);
     press(runtime, '', { return: true });
     assert.match(runtime.render(channel).text, /正在编辑/u);
   } finally {
@@ -779,7 +780,7 @@ test('a leave that arrives without an enter still clears the highlight', async (
   // Move the SELECTION to row 1 first: while row 1 is selected it keeps its
   // selection block whatever the pointer does, so it cannot show the hover
   // coming and going. Row 2 is then a row whose appearance is hover alone.
-  press(runtime, 'j');
+  press(runtime, '', { downArrow: true });
   const withSelectionMoved = runtime.render({ sessionId: 's1' });
   assert.equal(rowFor(withSelectionMoved, secondSeq).props.backgroundColor, 'selectionBg');
 
@@ -845,7 +846,7 @@ test('hover follows the row, not the screen slot, when the list scrolls under it
 
   // Hovered row 0 also happens to be the selected one, whose block would mask
   // the hover - so this checks the slot's newcomer with row 0 deselected.
-  press(runtime, 'j');                       // selection out of the way
+  press(runtime, '', { downArrow: true });   // selection out of the way
   const moved = runtime.render({ sessionId: 's1' });
   rowFor(moved, session.surface.nodes[0]).props.onMouseEnter();
   const hovered = runtime.render({ sessionId: 's1' });
@@ -896,6 +897,47 @@ test('typing is a no-op in list mode and Esc closes instead', async () => {
   assert.match(runtime.render({ sessionId: 's1' }).text, /rewrite · 1 assistant reply/u);
   press(runtime, '', { escape: true });
   assert.equal(runtime.isClosed(), true);
+});
+
+test('the list acts on arrows and Enter only: j/k and Ctrl+S are ignored', async () => {
+  // j/k moved the selection and Ctrl+S opened the editor. Both made the list
+  // respond to keys that mean something else (Ctrl+S is save), and neither was
+  // discoverable after the hint was reduced to "↑↓ select · Enter edit · Esc close".
+  const session = await sessionWithReplies(['first', 'second', 'third']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  const view = runtime.render({ sessionId: 's1' });
+  const [firstSeq] = session.surface.nodes;
+  assert.equal(rowFor(view, firstSeq).props.backgroundColor, 'selectionBg');
+
+  press(runtime, 'j');
+  press(runtime, 'k');
+  press(runtime, 's', { ctrl: true });
+  const after = runtime.render({ sessionId: 's1' });
+
+  assert.equal(rowFor(after, firstSeq).props.backgroundColor, 'selectionBg', 'j/k must not move the selection');
+  assert.doesNotMatch(after.text, /editing seq/u, 'Ctrl+S must not open the editor');
+});
+
+test('clicking a row opens the editor on that row, not on the selected one', async () => {
+  // The pointer already names its target; making the user click and then press
+  // Enter was the whole defect. The click must select the row (so Esc returns
+  // to it) and start editing that row's text in one gesture.
+  const session = await sessionWithReplies(['first', 'second']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  const view = runtime.render({ sessionId: 's1' });
+  const [firstSeq, secondSeq] = session.surface.nodes;
+
+  assert.match(view.text, /↑↓ select · Enter edit · Esc close/u);
+  assert.equal(rowFor(view, firstSeq).props.backgroundColor, 'selectionBg', 'row 0 starts selected');
+
+  rowFor(view, secondSeq).props.onClick();
+  const editing = runtime.render({ sessionId: 's1' });
+
+  assert.match(editing.text, new RegExp('editing seq ' + secondSeq, 'u'));
+  assert.match(editing.text, /second/u, 'the editor holds the clicked row text');
+  assert.doesNotMatch(editing.text, /first/u, 'not the selected row text');
 });
 
 test('collectTargets reads the projected text once a reply has been rewritten', async () => {
