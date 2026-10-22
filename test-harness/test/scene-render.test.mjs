@@ -23,6 +23,10 @@ import {
 import { REWRITE_RECORD_TYPE } from 'dsh-tui-rewrite/persist';
 import { openSession, sessionWithReplies } from '../tools.mjs';
 
+// These assertions read the scene's copy, so pin the language contract to en
+// regardless of this machine's ~/.dsh-tui/lang.json (which is zh here).
+process.env.DSH_TUI_LANG = 'en';
+
 // A leaked resolver would make the next test read another test's session.
 after(() => { setSessionResolver(undefined); setRewriteSubmitter(undefined); });
 
@@ -690,6 +694,22 @@ test('a native cursor does not take a text cell from the editor', async () => {
   press(runtime, '', { home: true });
   runtime.render({ sessionId: 's1' });
   assert.equal(runtime.cursorDeclarations.at(-1).column, 1);
+});
+
+test('the scene copy follows the host language', async () => {
+  const session = await sessionWithReplies(['HELLO']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  // The host's configured language outranks the env/file fallback.
+  process.env.DSH_TUI_LANG = 'en';
+  const channel = { sessionId: 's1', configuredLang: 'zh' };
+  try {
+    assert.match(runtime.render(channel).text, /条助手回复/u);
+    press(runtime, '', { return: true });
+    assert.match(runtime.render(channel).text, /正在编辑/u);
+  } finally {
+    process.env.DSH_TUI_LANG = 'en';
+  }
 });
 
 test('a list row carries the hover handlers, and hover is component-local state', async () => {

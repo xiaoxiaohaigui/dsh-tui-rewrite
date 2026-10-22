@@ -307,7 +307,7 @@ test('a composition WITHOUT the TUI seams still applies and reports itself inert
 test('the entry points are advertised with stable names', async () => {
   const main = await import('dsh-tui-rewrite');
   assert.equal(main.COMMAND_NAME, 'rewrite');
-  assert.equal(main.SHORTCUT_COMBO, 'alt+r');
+  assert.equal(main.SHORTCUT_COMBO, 'alt+w');
   assert.equal(main.SCENE_ID, 'dsh-tui-rewrite-scene');
   assert.deepEqual(main.inject, ['sessions']);
   // kebab-case, one slash: the grammar the entry-renderer and scene registries accept
@@ -315,6 +315,31 @@ test('the entry points are advertised with stable names', async () => {
   // modifier-carrying, as the shortcut registry requires (bare letters are typing)
   assert.match(main.SHORTCUT_COMBO, /^(ctrl|alt|meta)\+/u);
 });
+test('a host-reserved configured shortcut falls back to the default', async () => {
+  // The registry returns a disposer even for a refused combo (alt+r is the
+  // host's Continue action), so the plugin must verify acceptance via list()
+  // and fall back instead of reporting "shortcut bound" for a dead binding.
+  const root = new Context();
+  root.plugin(SessionStore);
+  await settle();
+  const registered = [];
+  root.provide('tuiShortcuts', {
+    register(combo) {
+      registered.push(combo);
+      return () => {};
+    },
+    list() {
+      return registered.filter(combo => combo !== 'alt+r').map(combo => ({ combo }));
+    },
+  });
+  const row = createPlugin({ shortcut: 'alt+r', timers: { schedule: (fn) => setTimeout(fn, 0), cancel: clearTimeout, budgetMs: 200 } });
+  const host = root.plugin(row);
+  await settle(60);
+  assert.deepEqual(registered, ['alt+r', 'alt+w']);
+  assert.equal(projectionStatus(row).shortcut, true, 'the fallback is the live binding');
+  await host.dispose();
+});
+
 test('the scene resolver reaches the live session through the real store', async () => {
   // This is the seam the host does NOT hand over in TuiSceneProps: the scene
   // gets React/ui/channel/close, so the plugin must resolve channel.sessionId

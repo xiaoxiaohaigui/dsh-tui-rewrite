@@ -32,6 +32,7 @@ import { REWRITE_RECORD_TYPE, appendRewrite, restoreIgnorableWriteGuard, rewrite
 import { SCENE_ID, RewriteScene, setSessionResolver, setRewriteSubmitter } from './scene.js';
 import { registerSeamWithRetry, whenSeamMounted } from './seam.js';
 import { debugLog, debugEnabled } from './debug.js';
+import { setLangOverride, t } from './i18n.js';
 
 /** Cordis plugin name (also the injection/debug label). */
 export const name = 'dsh-tui-rewrite';
@@ -48,7 +49,7 @@ export const COMMAND_NAME = 'rewrite';
 /** Contribution id used on the host-mediated command path. */
 export const COMMAND_CONTRIBUTION_ID = 'dsh-tui-rewrite.rewrite';
 /** Default entry chord for the scene. */
-export const SHORTCUT_COMBO = 'alt+r';
+export const SHORTCUT_COMBO = 'alt+w';
 
 export { REWRITE_EVENT_TYPE, REWRITE_RECORD_TYPE, rewriteProjection, SCENE_ID };
 export { whenSeamMounted, registerSeamWithRetry, SEAM_BUDGET_MS } from './seam.js';
@@ -197,8 +198,8 @@ function openScene(ctx) {
 function registerCommand(ctx, state) {
   const definition = {
     name: COMMAND_NAME,
-    description: 'Rewrite the text of an assistant reply on the model-visible surface',
-    input: { hint: '[no arguments — the scene picks the reply]' },
+    description: t('command-description'),
+    input: { hint: t('command-input-hint') },
     // Opening a scene is UI state, not conversation content.
     recordInput: false,
     handler: () => openScene(ctx),
@@ -240,21 +241,55 @@ function registerCommand(ctx, state) {
  * @param {import('@deepseek-ai/cordis').Context} ctx - plugin context.
  */
 function registerShortcut(ctx, config, state) {
+  const configured = typeof config.shortcut === 'string' ? config.shortcut.trim() : '';
+  if (configured === 'off') {
+    debugLog('shortcut disabled', { reason: 'config.shortcut is off' });
+    return;
+  }
+  const candidate = configured === '' ? SHORTCUT_COMBO : configured;
+
   const bind = shortcuts => {
-    try {
-      const dispose = shortcuts.register(SHORTCUT_COMBO, {
-        description: 'Rewrite an assistant reply',
-        handler: () => { openScene(ctx); },
-      }, ctx);
-      ctx.effect(() => dispose);
-      state.shortcut = true;
-      debugLog('shortcut bound', { combo: SHORTCUT_COMBO });
-    } catch (error) {
-      // Reserved / modifier-less / duplicate combos are refused with a warning
-      // by the registry itself; a bad binding must not fail the plugin's boot,
-      // and retrying a refused combo is pointless - it is refused by policy.
-      logSafely(ctx, 'warn', name + ': shortcut ' + SHORTCUT_COMBO + ' not bound (' + (error instanceof Error ? error.message : String(error)) + ')');
+    const options = {
+      description: t('shortcut-description'),
+      handler: () => { openScene(ctx); },
+    };
+    // The registry returns a disposer even for a refused combo (a built-in
+    // reserves alt+r for Continue, for example), so registration alone is not
+    // proof. list() is its acceptance contract; a liveness-gate throw means
+    // "cannot verify", where disposing a live binding would be worse.
+    const tryRegister = combo => {
+      const dispose = shortcuts.register(combo, options, ctx);
+      let accepted = true;
+      try {
+        const list = typeof shortcuts.list === 'function' ? shortcuts.list() : undefined;
+        if (Array.isArray(list)) {
+          accepted = list.some(entry => String(entry?.combo ?? '').toLowerCase() === combo.toLowerCase());
+        }
+      } catch {
+        accepted = true;
+      }
+      if (accepted) return dispose;
+      try { dispose(); } catch { /* a no-op disposer is the refusal path */ }
+      return undefined;
+    };
+
+    let combo = candidate;
+    let dispose = tryRegister(combo);
+    if (dispose === undefined && candidate !== SHORTCUT_COMBO) {
+      combo = SHORTCUT_COMBO;
+      dispose = tryRegister(combo);
+      if (dispose !== undefined) {
+        logSafely(ctx, 'warn', name + ': shortcut "' + candidate + '" was refused by the host; using ' + combo);
+      }
     }
+    if (dispose === undefined) {
+      debugLog('shortcut refused', { combo: candidate });
+      logSafely(ctx, 'warn', name + ': shortcut "' + candidate + '" was refused by the host; /' + COMMAND_NAME + ' is still available');
+      return;
+    }
+    ctx.effect(() => dispose);
+    state.shortcut = true;
+    debugLog('shortcut bound', { combo });
   };
   whenSeamMounted(ctx, 'tuiShortcuts', () => ctx.get('tuiShortcuts', false), bind, config);
 }
@@ -356,7 +391,14 @@ export function createPlugin(config = {}) {
   // Newest instance wins the no-argument projectionStatus() reading, which is
   // exactly the single-instance production case.
   latest = plugin;
-  const apply = ctx => {
+  const apply = (ctx, rowConfig) => {
+    // A cordis row may carry `config: { shortcut, lang }`; the test seam
+    // (createPlugin({ timers })) merges the same way. Production passes no
+    // config unless the profile row sets one.
+    const settings = { ...config, ...(rowConfig !== null && typeof rowConfig === 'object' ? rowConfig : {}) };
+    if (settings.lang !== undefined) {
+      try { setLangOverride(settings.lang); } catch { /* a bad lang falls back to auto */ }
+    }
     try {
       registerProjection(ctx, state);
     } catch (error) {
@@ -377,7 +419,7 @@ export function createPlugin(config = {}) {
       logSafely(ctx, 'warn', name + ': could not scope the persistence guard (' + (error instanceof Error ? error.message : String(error)) + ')');
     }
     try {
-      registerScene(ctx, config, state);
+      registerScene(ctx, settings, state);
     } catch (error) {
       logSafely(ctx, 'warn', name + ': scene registration failed (' + (error instanceof Error ? error.message : String(error)) + ')');
     }
@@ -387,7 +429,7 @@ export function createPlugin(config = {}) {
       logSafely(ctx, 'warn', name + ': command registration failed (' + (error instanceof Error ? error.message : String(error)) + ')');
     }
     try {
-      registerShortcut(ctx, config, state);
+      registerShortcut(ctx, settings, state);
     } catch (error) {
       logSafely(ctx, 'warn', name + ': shortcut registration failed (' + (error instanceof Error ? error.message : String(error)) + ')');
     }

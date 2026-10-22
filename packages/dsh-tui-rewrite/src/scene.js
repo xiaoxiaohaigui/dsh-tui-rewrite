@@ -44,6 +44,7 @@
 import { jsx, jsxs } from '@deepseek-harness-tui/dsh-tui/jsx-runtime';
 import { REWRITE_RECORD_TYPE } from './persist.js';
 import { debugLog } from './debug.js';
+import { t } from './i18n.js';
 
 /** Scene id (kebab-case, per the tuiScenes grammar). */
 export const SCENE_ID = 'dsh-tui-rewrite-scene';
@@ -270,6 +271,9 @@ export function RewriteScene(props) {
   // Read per render, not captured: a session switch under an open scene must
   // rebind the list instead of editing the session it was opened on.
   const session = sessionFor(channel?.sessionId);
+  // The host's deployment language wins for the scene copy when it sets one;
+  // otherwise t() follows DSH_TUI_LANG / ~/.dsh-tui/lang.json / OS locale.
+  const tr = (key, params) => t(key, params, channel?.configuredLang);
 
   const [targets, setTargets] = useState(() => collectTargets(session));
   const [selected, setSelected] = useState(0);
@@ -392,7 +396,7 @@ export function RewriteScene(props) {
     const target = mirrors.targets.current[mirrors.selected.current];
     if (text === undefined || target === undefined || session === undefined) return;
     if (text === target.original) {
-      leaveEdit('unchanged — nothing appended');
+      leaveEdit(tr('edit-unchanged'));
       return;
     }
     // An emptied editor is not a rewrite. The projection would faithfully
@@ -403,18 +407,18 @@ export function RewriteScene(props) {
     // reply of nothing but spaces is not text a user meant to send.
     if (text.trim().length === 0) {
       debugLog('empty rewrite refused', { targetSeq: target.seq });
-      leaveEdit('empty text — nothing appended');
+      leaveEdit(tr('edit-empty'));
       return;
     }
     try {
       const event = writeRewrite(session, { targetSeq: target.seq, content: text });
       const eventSeq = event?.seq;
       debugLog('rewrite appended', { targetSeq: target.seq, eventSeq, chars: units(text).length });
-      leaveEdit('rewrote seq ' + target.seq + ' — the model sees the new text, the log keeps the original');
+      leaveEdit(tr('edit-rewritten', { seq: target.seq }));
       writeTargets(collectTargets(session));
     } catch (error) {
       debugLog('append threw', { targetSeq: target.seq, error: String(error) });
-      leaveEdit('append failed: ' + String(error).slice(0, 70));
+      leaveEdit(tr('edit-append-failed', { error: String(error).slice(0, 70) }));
     }
   }, [session, leaveEdit, writeTargets]);
 
@@ -435,7 +439,7 @@ export function RewriteScene(props) {
       const cursor = Math.min(mirrors.caret.current, chars.length);
       const move = writeCaret;
 
-      if (key.escape) { leaveEdit(current => (current === '' ? 'edit cancelled' : current)); return; }
+      if (key.escape) { leaveEdit(current => (current === '' ? tr('edit-cancelled') : current)); return; }
       if (key.ctrl && input === 's') { submit(); return; }
       if (key.leftArrow) { move(Math.max(0, cursor - 1)); return; }
       if (key.rightArrow) { move(Math.min(chars.length, cursor + 1)); return; }
@@ -513,9 +517,9 @@ export function RewriteScene(props) {
     return jsxs(Box, {
       flexDirection: 'column',
       children: [
-        jsx(Text, { color: 'error', children: ' rewrite · no live session is bound to this UI' }),
-        jsx(Text, { dimColor: true, children: ' session ' + String(channel?.sessionId ?? '(none)') }),
-        jsx(Text, { dimColor: true, children: ' Esc to close' }),
+        jsx(Text, { color: 'error', children: tr('scene-no-session') }),
+        jsx(Text, { dimColor: true, children: tr('scene-session', { id: String(channel?.sessionId ?? '(none)') }) }),
+        jsx(Text, { dimColor: true, children: tr('scene-esc-close') }),
       ],
     });
   }
@@ -530,8 +534,8 @@ export function RewriteScene(props) {
     return jsxs(Box, {
       flexDirection: 'column',
       children: [
-        jsx(Text, { bold: true, children: ' rewrite · editing seq ' + (target === undefined ? '?' : target.seq) + '  (line ' + (row + 1) + '/' + lines.length + ', col ' + (column + 1) + ')' }),
-        jsx(Text, { dimColor: true, children: ' Enter newline · Ctrl+S submit · Esc cancel' }),
+        jsx(Text, { bold: true, children: tr('edit-title', { seq: target === undefined ? '?' : target.seq, line: row + 1, lines: lines.length, col: column + 1 }) }),
+        jsx(Text, { dimColor: true, children: tr('edit-hint') }),
         jsx(Box, {
           flexDirection: 'column',
           borderStyle: 'round',
@@ -576,8 +580,8 @@ export function RewriteScene(props) {
   return jsxs(Box, {
     flexDirection: 'column',
     children: [
-      jsx(Text, { bold: true, children: ' rewrite · ' + targets.length + ' assistant repl' + (targets.length === 1 ? 'y' : 'ies') + ' · session ' + String(channel?.sessionId ?? '').slice(0, 8) }),
-      jsx(Text, { dimColor: true, children: ' ↑↓ / jk select · Enter edit · click a row · wheel scrolls · Ctrl+S edit · Esc close' }),
+      jsx(Text, { bold: true, children: tr(targets.length === 1 ? 'scene-title-one' : 'scene-title', { count: targets.length, id: String(channel?.sessionId ?? '').slice(0, 8) }) }),
+      jsx(Text, { dimColor: true, children: tr('scene-hint') }),
       jsx(Box, {
         flexDirection: 'column',
         flexGrow: 1,
@@ -595,7 +599,7 @@ export function RewriteScene(props) {
           choose(Math.max(0, Math.min(targets.length - 1, mirrors.selected.current + delta)));
         },
         children: visibleTargets.length === 0
-          ? [jsx(Text, { dimColor: true, children: ' (no assistant replies with text in this session yet)' })]
+          ? [jsx(Text, { dimColor: true, children: tr('scene-empty') })]
           : visibleTargets.map((target, offset) => {
             const index = scroll + offset;
             const isSelected = index === selected;
@@ -622,7 +626,7 @@ export function RewriteScene(props) {
             });
           }),
       }),
-      jsx(Text, { color: status.startsWith('append failed') ? 'error' : 'success', children: ' ' + status }),
+      jsx(Text, { color: status.startsWith(tr('edit-append-failed', { error: '' })) ? 'error' : 'success', children: ' ' + status }),
     ],
   });
 }

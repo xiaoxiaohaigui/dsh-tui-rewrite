@@ -44,8 +44,13 @@ export interface ProjectionStatus {
   shortcut: boolean;
 }
 
-/** Test seam: injectable timer functions for the late-mount polls. */
+/** Plugin row config (and the test seam for injectable timers). */
 export interface PluginConfig {
+  /** Entry chord; `off` disables the shortcut and leaves `/rewrite`. */
+  shortcut?: string;
+  /** Force the scene copy language; absent follows DSH_TUI_LANG / ~/.dsh-tui/lang.json / OS locale. */
+  lang?: 'zh' | 'en';
+  /** Test seam: injectable timer functions for the late-mount polls. */
   timers?: {
     schedule?: (fn: () => void, ms: number) => unknown;
     cancel?: (handle: unknown) => void;
@@ -58,7 +63,7 @@ export interface PluginConfig {
 export interface PluginRow {
   name: typeof name;
   inject: typeof inject;
-  apply: (ctx: Context) => void;
+  apply: (ctx: Context, config?: PluginConfig) => void;
   /**
    * This instance's own live state. Present so a caller that holds a row can
    * ask about THAT row: a process can hold several contexts, and the
