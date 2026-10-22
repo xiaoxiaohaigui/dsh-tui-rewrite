@@ -51,8 +51,8 @@ import { t } from './i18n.js';
 /** Scene id (kebab-case, per the tuiScenes grammar). */
 export const SCENE_ID = 'dsh-tui-rewrite-scene';
 
-/** Edit-pane viewport rows. */
-const EDIT_ROWS = 4;
+/** Cells before a rendered editor line's first text cell: border + padding + its leading space. */
+const EDIT_TEXT_OFFSET = 3;
 /** Width budget for a list preview, in display cells. */
 const PREVIEW_CELLS = 64;
 
@@ -212,6 +212,31 @@ export function rowOf(chars, cursor) {
 }
 
 /**
+ * Caret index a click at display column `visualColumn` targets.
+ *
+ * Columns are display cells, not code points: a CJK character or an emoji
+ * spans two cells, and clicking either half lands on the nearest boundary
+ * (left half before it, right half after it). A column past the line end clamps
+ * to the end, so clicking the blank area right of the text continues typing
+ * where it visually appears to.
+ *
+ * The rendered line has one leading space that is not part of `chars`; callers
+ * subtract it (and the border/padding) from the event column before calling.
+ */
+export function caretAtVisualColumn(chars, visualColumn) {
+  if (!Number.isFinite(visualColumn) || visualColumn <= 0) return 0;
+  let cells = 0;
+  for (let i = 0; i < chars.length; i += 1) {
+    const width = cellWidth(chars[i].codePointAt(0));
+    if (visualColumn < cells + width) {
+      return visualColumn - cells >= width / 2 ? i + 1 : i;
+    }
+    cells += width;
+  }
+  return chars.length;
+}
+
+/**
  * Create the synchronous mirrors the input handler reads.
  *
  * A stdin chunk can deliver several keys before React re-renders, so a handler
@@ -280,6 +305,9 @@ export function RewriteScene(props) {
   const [targets, setTargets] = useState(() => collectTargets(session));
   const [selected, setSelected] = useState(0);
   const [scroll, setScroll] = useState(0);
+  // Top line of the editor viewport. Kept apart from the caret so the wheel can
+  // look around without moving the insertion point (see the follow effect).
+  const [editTop, setEditTop] = useState(0);
   const [draft, setDraft] = useState(undefined);
   const [status, setStatus] = useState('');
   const [caret, setCaret] = useState(0);
@@ -292,7 +320,12 @@ export function RewriteScene(props) {
   // (see useMirrorRefs). The setter wrappers below are the only writers.
   const mirrors = useMirrorRefs(React);
 
-  const bodyRows = Math.max(1, (size.rows ?? 24) - 5);
+  const terminalRows = Math.max(6, size.rows ?? 24);
+  const bodyRows = Math.max(1, terminalRows - 5);
+  // Title + hint + status take three rows; the bordered box adds its two border
+  // rows on top of the text rows. Filling the terminal is what makes the editor
+  // usable for long replies instead of a four-row slit.
+  const editRows = Math.max(1, terminalRows - 5);
 
   // The editor caret must not consume a text cell: inserting a ▏ glyph shifts
   // every character to its right, which is what made the editor look like it
@@ -306,9 +339,18 @@ export function RewriteScene(props) {
   const draftCaret = Math.min(caret, draftChars.length);
   const draftRow = draft === undefined ? 0 : rowOf(draftChars, draftCaret);
   const draftLines = draft === undefined ? [] : draft.split('\n');
-  const draftFirst = draft === undefined
-    ? 0
-    : Math.max(0, Math.min(Math.max(0, draftLines.length - 1), draftRow - Math.floor(EDIT_ROWS / 2)));
+  const maxEditTop = draft === undefined ? 0 : Math.max(0, draftLines.length - editRows);
+  const draftFirst = draft === undefined ? 0 : Math.max(0, Math.min(editTop, maxEditTop));
+  // Code-point offset where each rendered line starts. Click mapping needs the
+  // line's start, not a linear scan to it on every render.
+  const draftLineStarts = [];
+  if (draft !== undefined) {
+    let start = 0;
+    for (const line of draftLines) {
+      draftLineStarts.push(start);
+      start += units(line).length + 1;
+    }
+  }
   const draftLineStart = draft === undefined ? 0 : lineStartOf(draftChars, draftCaret);
   const draftColumn = draftCaret - draftLineStart;
   const draftLineChars = draft === undefined ? [] : units(draftLines[draftRow] ?? '');
@@ -426,10 +468,18 @@ export function RewriteScene(props) {
 
   const beginEdit = useCallback(target => {
     if (target === undefined) return;
-    writeCaret(units(target.original).length);
+    const chars = units(target.original);
+    const at = chars.length;
+    const lines = target.original.split('\n');
+    const max = Math.max(0, lines.length - editRows);
+    writeCaret(at);
     writeDraft(target.original);
+    // Start with the caret centred rather than at the very bottom: the last
+    // lines of a long reply are usually the interesting ones, and the user can
+    // still wheel or arrow from there.
+    setEditTop(Math.max(0, Math.min(max, rowOf(chars, at) - Math.floor(editRows / 2))));
     setStatus('');
-  }, [writeCaret, writeDraft]);
+  }, [writeCaret, writeDraft, editRows]);
 
   useInput((input, key) => {
     // The draft mirror IS the mode switch: it is written by the same statement
@@ -512,6 +562,20 @@ export function RewriteScene(props) {
     else if (selected >= scroll + bodyRows) setScroll(selected - bodyRows + 1);
   }, [selected, scroll, bodyRows]);
 
+  // Keep the caret inside the editor viewport while it moves (typing, arrows,
+  // a click). Deliberately NOT keyed on editTop: the wheel changes only
+  // editTop, and the effect must not snap the view straight back to the caret.
+  useEffect(() => {
+    if (draft === undefined) return;
+    setEditTop(top => {
+      const max = Math.max(0, draftLines.length - editRows);
+      let next = Math.max(0, Math.min(top, max));
+      if (draftRow < next) next = draftRow;
+      else if (draftRow >= next + editRows) next = Math.min(max, draftRow - editRows + 1);
+      return next;
+    });
+  }, [draft, draftRow, editRows, draftLines.length]);
+
   if (session === undefined) {
     // Reachable in three honest situations: the composition has no session
     // store, the bound channel is not backed by a live session yet (the
@@ -533,10 +597,18 @@ export function RewriteScene(props) {
     const column = draftColumn;
     const lines = draftLines;
     const first = draftFirst;
-    const visible = lines.slice(first, first + EDIT_ROWS);
+    const visible = lines.slice(first, first + editRows);
     const target = targets[selected];
     return jsxs(Box, {
       flexDirection: 'column',
+      height: terminalRows,
+      // The wheel moves the VIEWPORT, not the caret: looking around must not
+      // change what Ctrl+S would submit.
+      onWheel: event => {
+        const delta = wheelRows(event.deltaY ?? 0, event.deltaX ?? 0);
+        if (delta === 0 || maxEditTop === 0) return;
+        setEditTop(top => Math.max(0, Math.min(maxEditTop, top + delta)));
+      },
       children: [
         jsx(Text, { bold: true, children: tr('edit-title', { seq: target === undefined ? '?' : target.seq, line: row + 1, lines: lines.length, col: column + 1 }) }),
         jsx(Text, { dimColor: true, children: tr('edit-hint') }),
@@ -545,7 +617,26 @@ export function RewriteScene(props) {
           borderStyle: 'round',
           borderColor: 'permission',
           paddingX: 1,
-          height: EDIT_ROWS + 2,
+          height: editRows + 2,
+          onClick: event => {
+            // localRow/localCol are relative to THIS box, borders included:
+            // row 0 is the top border, the text starts after border + padding
+            // and the one leading space every painted line carries.
+            const innerRow = event.localRow - 1;
+            const innerColumn = event.localCol - EDIT_TEXT_OFFSET;
+            if (innerRow < 0 || innerRow >= editRows || innerColumn < 0) return;
+            const lineIndex = first + innerRow;
+            // Below the last line: the end of the buffer is where clicking the
+            // blank tail of an editor usually puts the caret.
+            if (lineIndex >= lines.length) {
+              writeCaret(draftChars.length);
+              return;
+            }
+            writeCaret(
+              draftLineStarts[lineIndex]
+              + caretAtVisualColumn(units(lines[lineIndex]), innerColumn),
+            );
+          },
           children: visible.map((line, offset) => {
             const absolute = first + offset;
             if (absolute === row) {

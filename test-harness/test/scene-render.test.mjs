@@ -18,7 +18,7 @@ import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   RewriteScene, SCENE_ID, setSessionResolver, setRewriteSubmitter, sessionFor, collectTargets, messageText,
-  lineStartOf, lineEndOf, useMirrorRefs,
+  lineStartOf, lineEndOf, rowOf, caretAtVisualColumn, units, useMirrorRefs,
 } from 'dsh-tui-rewrite/scene';
 import { REWRITE_RECORD_TYPE } from 'dsh-tui-rewrite/persist';
 import { openSession, sessionWithReplies } from '../tools.mjs';
@@ -67,6 +67,27 @@ function hoverRows(node, out = []) {
 /** The rendered list row for a target seq. */
 function rowFor(view, seq) {
   return hoverRows(view.tree).find(row => row.key === 'target-' + seq);
+}
+
+/** The bordered editor pane: the element that owns click-to-place and its rows. */
+function findEditorBox(view) {
+  const node = view?.tree ?? view;
+  if (node === null || node === undefined || typeof node !== 'object') return undefined;
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findEditorBox(child);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+  if (node.props?.borderStyle === 'round' && typeof node.props?.onClick === 'function') return node;
+  return findEditorBox(node.props?.children);
+}
+
+/** The painted text of each editor row, in screen order. */
+function editorLineTexts(view) {
+  const box = findEditorBox(view);
+  return [].concat(box.props.children).map(child => texts(child).join(''));
 }
 
 /** The scrollable list container: the element the wheel events arrive on. */
@@ -917,6 +938,85 @@ test('the list acts on arrows and Enter only: j/k and Ctrl+S are ignored', async
 
   assert.equal(rowFor(after, firstSeq).props.backgroundColor, 'selectionBg', 'j/k must not move the selection');
   assert.doesNotMatch(after.text, /editing seq/u, 'Ctrl+S must not open the editor');
+});
+
+test('a click column maps through display cells, not code points', () => {
+  assert.equal(caretAtVisualColumn(units('abc'), 0), 0);
+  assert.equal(caretAtVisualColumn(units('abc'), 1), 1);
+  assert.equal(caretAtVisualColumn(units('abc'), 99), 3, 'past the line end clamps to its end');
+
+  // 中 occupies cells 0-1, 😀 cells 2-3, Z cell 4. A wide character splits at
+  // its midpoint, so either half lands on the nearer boundary instead of
+  // always snapping to the left one.
+  const wide = units('中😀Z');
+  assert.equal(caretAtVisualColumn(wide, 0), 0, 'left half of 中');
+  assert.equal(caretAtVisualColumn(wide, 1), 1, 'right half of 中');
+  assert.equal(caretAtVisualColumn(wide, 2), 1, 'left half of 😀');
+  assert.equal(caretAtVisualColumn(wide, 3), 2, 'right half of 😀');
+  assert.equal(caretAtVisualColumn(wide, 4), 2, 'the Z cell places the caret before Z');
+  assert.equal(caretAtVisualColumn(wide, 5), 3, 'one cell past Z places it after');
+});
+
+test('the editor fills the terminal, and its wheel scrolls the view without the caret', async () => {
+  const text = Array.from({ length: 30 }, (unused, index) => 'L' + String(index + 1).padStart(2, '0')).join('\n');
+  const session = await sessionWithReplies([text]);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  runtime.render({ sessionId: 's1' });
+  press(runtime, '', { return: true });
+  const view = runtime.render({ sessionId: 's1' });
+
+  const box = findEditorBox(view);
+  assert.equal(view.tree.props.height, 24, 'the scene owns the whole terminal');
+  assert.equal(box.props.height, 21, 'the pane fills the rows left by title, hint and status');
+  assert.equal(editorLineTexts(view).length, 19, 'all 19 viewport rows are painted');
+  assert.match(editorLineTexts(view)[0], /L12/u, 'the caret at the end clamps the view to the last page');
+  assert.match(view.text, /line 30\/30, col 4/u);
+
+  findWheelBox(view.tree).props.onWheel({ deltaY: -3, deltaX: 0 });
+  const up = runtime.render({ sessionId: 's1' });
+  assert.match(editorLineTexts(up)[0], /L09/u, 'one notch moves the viewport three lines');
+  assert.match(up.text, /line 30\/30, col 4/u, 'the wheel does not move the caret');
+
+  // A click is interpreted against the SCROLLED viewport, not the buffer top.
+  findEditorBox(up).props.onClick({ localRow: 1, localCol: 4 });
+  const clicked = runtime.render({ sessionId: 's1' });
+  assert.match(clicked.text, /line 9\/30, col 2/u, 'the first visible row is line 9 after the scroll');
+  // This host has no declared native cursor, so the caret is the inline ▏.
+  assert.match(editorLineTexts(clicked)[0], /L▏?09/u, 'placing the caret inside the view leaves the view alone');
+
+  findWheelBox(clicked.tree).props.onWheel({ deltaY: 3, deltaX: 0 });
+  const down = runtime.render({ sessionId: 's1' });
+  assert.match(editorLineTexts(down)[0], /L12/u, 'the view scrolls back');
+  assert.match(down.text, /line 9\/30, col 2/u, 'and the caret stays on line 9');
+});
+
+test('clicking in the editor moves the caret to the clicked line and cell', async () => {
+  // ALPHA / 中😀Z / OMEGA: the middle line checks that the column is converted
+  // from display cells, the last line checks the blank tail, and row 0 checks
+  // that a border click is not mistaken for text.
+  const session = await sessionWithReplies(['ALPHA\n中😀Z\nOMEGA']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  const list = runtime.render({ sessionId: 's1' });
+  rowFor(list, session.surface.nodes[0]).props.onClick();
+  let view = runtime.render({ sessionId: 's1' });
+
+  findEditorBox(view).props.onClick({ localRow: 1, localCol: 5 });
+  view = runtime.render({ sessionId: 's1' });
+  assert.match(view.text, /line 1\/3, col 3/u, 'click before P in ALPHA');
+
+  findEditorBox(view).props.onClick({ localRow: 2, localCol: 6 });
+  view = runtime.render({ sessionId: 's1' });
+  assert.match(view.text, /line 2\/3, col 3/u, 'the right half of 😀 puts the caret after it');
+
+  findEditorBox(view).props.onClick({ localRow: 6, localCol: 4 });
+  view = runtime.render({ sessionId: 's1' });
+  assert.match(view.text, /line 3\/3, col 6/u, 'the blank tail below the text means end of buffer');
+
+  findEditorBox(view).props.onClick({ localRow: 0, localCol: 5 });
+  const border = runtime.render({ sessionId: 's1' });
+  assert.match(border.text, /line 3\/3, col 6/u, 'the border is not text');
 });
 
 test('clicking a row opens the editor on that row, not on the selected one', async () => {

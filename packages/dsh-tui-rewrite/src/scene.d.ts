@@ -56,6 +56,13 @@ export declare function lineEndOf(chars: readonly string[], cursor: number): num
 /** Visual row of `cursor` (counting newlines, not wrapped lines). */
 export declare function rowOf(chars: readonly string[], cursor: number): number;
 
+/**
+ * Caret index a click at display column `visualColumn` targets. Display cells,
+ * not code points: wide characters split at their midpoint, and a column past
+ * the line end clamps to the end.
+ */
+export declare function caretAtVisualColumn(chars: readonly string[], visualColumn: number): number;
+
 /** Signed rows one wheel notch asks for; 0 for a horizontal-only event. */
 export declare function wheelRows(deltaY: number, deltaX: number): number;
 
