@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import {
   RewriteScene, SCENE_ID, setSessionResolver, setRewriteSubmitter, sessionFor, collectTargets, messageText,
   lineStartOf, lineEndOf, rowOf, caretAtVisualColumn, wrapEditorLine, layoutEditorRows,
-  visualRowOfCaret, visualColumnOfCaret, units, cellWidth, useMirrorRefs,
+  visualRowOfCaret, visualColumnOfCaret, verticalCaretTarget, units, cellWidth, useMirrorRefs,
 } from 'dsh-tui-rewrite/scene';
 import { REWRITE_RECORD_TYPE } from 'dsh-tui-rewrite/persist';
 import { openSession, sessionWithReplies } from '../tools.mjs';
@@ -701,6 +701,105 @@ test('Home then End in ONE chunk resolves against the draft, not the render', as
   press(runtime, '', { home: true });
   press(runtime, 'X');                           // insert AT the line start
   assert.match(caretLine(runtime.render({ sessionId: 's1' })), /X▏ABC/u);
+});
+
+test('Up/Down walk display rows of a soft-wrapped line and keep the column', () => {
+  const rows = layoutEditorRows('abcdefghij', 4); // abcd | efgh | ij
+  const chars = units('abcdefghij');
+  assert.deepEqual(rows.map(row => row.text), ['abcd', 'efgh', 'ij']);
+
+  assert.equal(verticalCaretTarget(rows, chars, 10, -1), 6, 'row 3 end -> row 2, same column');
+  assert.equal(verticalCaretTarget(rows, chars, 6, -1), 2, 'row 2 -> row 1, same column');
+  assert.equal(verticalCaretTarget(rows, chars, 2, -1), 0, 'above the first row goes to the buffer start');
+  assert.equal(verticalCaretTarget(rows, chars, 0, 1), 4, 'below the first row starts the next display row');
+  assert.equal(verticalCaretTarget(rows, chars, 10, 1), 10, 'below the last row goes to the buffer end');
+});
+
+test('Up/Down move one display row in a wrapped message, not a logical line', async () => {
+  const width = 94;
+  const text = 'L01' + 'A'.repeat(width - 3) + 'L02' + 'A'.repeat(width - 3);
+  const session = await sessionWithReplies([text]);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  runtime.render({ sessionId: 's1' });
+  press(runtime, '', { return: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 189/u);
+
+  press(runtime, '', { upArrow: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 95/u, 'one row up: end of the first display row');
+  press(runtime, '', { upArrow: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 1/u, 'above the first row goes to the buffer start');
+  press(runtime, '', { downArrow: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 95/u, 'one row down: start of the second display row');
+  press(runtime, '', { downArrow: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 189/u, 'below the last row goes to the buffer end');
+});
+
+test('Ctrl+Z undoes one typed word and restores the caret', async () => {
+  const session = await sessionWithReplies(['HELLO']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  runtime.render({ sessionId: 's1' });
+  press(runtime, '', { return: true });
+  press(runtime, 'X');
+  press(runtime, 'Y');
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 8/u);
+
+  press(runtime, 'z', { ctrl: true });
+  const undone = runtime.render({ sessionId: 's1' });
+  assert.match(undone.text, /line 1\/1, col 6/u, 'the caret returns to where the word started');
+  assert.match(undone.text, /HELLO/u);
+  assert.doesNotMatch(undone.text, /HELLOXY/u);
+
+  // The restored state starts a fresh run: typing again does not fold into the
+  // step that was just undone, and a second undo would take that new word too.
+  press(runtime, 'Z');
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 7/u);
+  press(runtime, 'z', { ctrl: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 6/u);
+});
+
+test('Ctrl+Z treats a space as a word boundary and a paste as one step', async () => {
+  const session = await sessionWithReplies(['HELLO']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  runtime.render({ sessionId: 's1' });
+  press(runtime, '', { return: true });
+  press(runtime, 'X');
+  press(runtime, ' ');
+  press(runtime, 'Y');
+
+  press(runtime, 'z', { ctrl: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 8/u, 'only Y is removed');
+  press(runtime, 'z', { ctrl: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 7/u, 'the space is its own step');
+  press(runtime, 'z', { ctrl: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 6/u, 'then the word');
+
+  press(runtime, 'Q');
+  press(runtime, 'RST');                    // multi-character input = paste
+  press(runtime, 'z', { ctrl: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 7/u, 'a paste is one undo step');
+});
+
+test('Ctrl+Z on an empty stack is a no-op and never clears the draft', async () => {
+  const session = await sessionWithReplies(['HELLO']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  runtime.render({ sessionId: 's1' });
+  press(runtime, '', { return: true });
+
+  press(runtime, 'z', { ctrl: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 6/u);
+  assert.match(runtime.render({ sessionId: 's1' }).text, /HELLO/u);
+
+  // Leaving the editor ends the draft's history: a fresh edit of the same
+  // message must not undo text typed in the previous session.
+  press(runtime, 'X');
+  press(runtime, '', { escape: true });
+  press(runtime, '', { return: true });
+  press(runtime, 'z', { ctrl: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 6/u, 'the old stack is gone');
 });
 
 test('a native cursor does not take a text cell from the editor', async () => {

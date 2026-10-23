@@ -107,8 +107,8 @@ const dict = {
     zh: ' rewrite · 正在编辑 seq {{seq}}  （第 {{line}}/{{lines}} 行，第 {{col}} 列）',
   },
   'edit-hint': {
-    en: ' Enter newline · Ctrl+S submit · Esc cancel',
-    zh: ' Enter 换行 · Ctrl+S 提交 · Esc 取消',
+    en: ' Enter newline · Ctrl+Z undo · Ctrl+S submit · Esc cancel',
+    zh: ' Enter 换行 · Ctrl+Z 撤销 · Ctrl+S 提交 · Esc 取消',
   },
   'edit-cancelled': { en: 'edit cancelled', zh: '已取消编辑' },
   'edit-unchanged': { en: 'unchanged — nothing appended', zh: '未修改 — 没有追加事件' },

@@ -53,6 +53,10 @@ export const SCENE_ID = 'dsh-tui-rewrite-scene';
 
 /** Cells before a rendered editor line's first text cell: border + padding + its leading space. */
 const EDIT_TEXT_OFFSET = 3;
+/** Undo depth, snapshot budget and the idle window that folds a typing run. */
+const UNDO_LIMIT = 100;
+const UNDO_MAX_CHARS = 1_000_000;
+const UNDO_IDLE_MS = 700;
 /** Width budget for a list preview, in display cells. */
 const PREVIEW_CELLS = 64;
 
@@ -314,6 +318,46 @@ export function visualColumnOfCaret(chars, rows, index, caret) {
 }
 
 /**
+ * Caret offset one display row above (`delta < 0`) or below (`delta > 0`),
+ * keeping the visual column. This is what makes Up/Down walk the SOFT-WRAPPED
+ * rows of a long sentence instead of jumping over the whole logical line.
+ * Above the first row the caret goes to the buffer start; below the last row,
+ * to its end.
+ */
+export function verticalCaretTarget(rows, chars, caret, delta) {
+  const index = visualRowOfCaret(rows, caret);
+  const column = visualColumnOfCaret(chars, rows, index, caret);
+  const target = index + delta;
+  if (target < 0) return 0;
+  if (target >= rows.length) return chars.length;
+  const row = rows[target];
+  return row.start + caretAtVisualColumn(units(row.text), column);
+}
+
+/**
+ * Whether the caret seam in `text` is a word boundary (used to end an undo
+ * typing run). Cheap approximation of the host's ICU rule: edges, whitespace,
+ * punctuation, script/CJK changes and digit/letter changes break a word.
+ */
+function wordBoundaryAt(text, offset) {
+  const chars = units(text);
+  if (offset <= 0 || offset >= chars.length) return true;
+  const left = chars[offset - 1];
+  const right = chars[offset];
+  const word = /[\p{L}\p{N}]/u;
+  if (!word.test(left) || !word.test(right)) return true;
+  if (/\s/u.test(left) || /\s/u.test(right)) return true;
+  const cjk = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+  if (cjk.test(left) || cjk.test(right)) return true;
+  const digit = /\p{N}/u;
+  if (digit.test(left) !== digit.test(right)) return true;
+  // Any script other than Latin ends the run at every character; for Latin,
+  // letters (including accents) keep folding into the same word.
+  const latin = /\p{Script=Latin}/u;
+  return !latin.test(left) || !latin.test(right);
+}
+
+/**
  * Create the synchronous mirrors the input handler reads.
  *
  * A stdin chunk can deliver several keys before React re-renders, so a handler
@@ -351,6 +395,9 @@ function makeMirrors() {
     draft: { current: undefined },
     caret: { current: 0 },
     targets: { current: [] },
+    // Draft-scoped undo stack, in snapshot-before-edit form. `group` is the
+    // currently open typing/deletion run, so a word folds into one Ctrl+Z.
+    undo: { current: { stack: [], group: null } },
   };
 }
 
@@ -486,6 +533,55 @@ export function RewriteScene(props) {
   }, []);
 
   /**
+   * Apply one text mutation, recording an undo snapshot first.
+   *
+   * A run folds into the previous step when the same direction continues at
+   * the same caret within {@link UNDO_IDLE_MS}, and - for an insertion - the
+   * seam stays inside a word. That is the host prompt editor's word-level
+   * granularity: Ctrl+Z drops "world", not the whole sentence and not one
+   * keystroke. A newline or a paste always starts a sealed step.
+   */
+  const recordEdit = useCallback((next, nextCaret, kind) => {
+    const before = mirrors.draft.current ?? '';
+    const beforeCaret = mirrors.caret.current ?? 0;
+    const store = mirrors.undo.current;
+    const at = Date.now();
+    const last = store.group;
+    const continues = last !== null
+      && last.kind === kind
+      && at - last.atMs <= UNDO_IDLE_MS
+      && last.caretAfter === beforeCaret;
+    const fold = kind === 'insert'
+      ? continues && !wordBoundaryAt(next, beforeCaret)
+      : (kind === 'backspace' || kind === 'delete') && continues;
+    if (!fold) {
+      store.stack.push({ text: before, caret: beforeCaret });
+      while (store.stack.length > UNDO_LIMIT) store.stack.shift();
+      // Memory guard: a few huge drafts must not pin tens of megabytes.
+      let chars = store.stack.reduce((total, entry) => total + entry.text.length, 0);
+      while (chars > UNDO_MAX_CHARS && store.stack.length > 1) {
+        chars -= store.stack.shift().text.length;
+      }
+    }
+    store.group = { kind, caretAfter: nextCaret, atMs: at };
+    writeDraft(next);
+    writeCaret(nextCaret);
+  }, [mirrors, writeDraft, writeCaret]);
+
+  /** Ctrl+Z: restore the state before the current undo step. Empty = no-op. */
+  const undoEdit = useCallback(() => {
+    const store = mirrors.undo.current;
+    const entry = store.stack.pop();
+    if (entry === undefined) return;
+    // The restored state starts a fresh run: the next keystroke must not fold
+    // into the step that was just undone.
+    store.group = null;
+    writeDraft(entry.text);
+    writeCaret(entry.caret);
+    setStatus('');
+  }, [mirrors, writeDraft, writeCaret]);
+
+  /**
    * Leave the editor. The draft mirror IS the mode switch, so it clears here
    * too - a handler that runs again in the same chunk must already read "list".
    *
@@ -494,6 +590,9 @@ export function RewriteScene(props) {
   const leaveEdit = useCallback(next => {
     mirrors.draft.current = undefined;
     mirrors.caret.current = 0;
+    // The undo stack belongs to this edit session; a later message must not
+    // restore this one's text.
+    mirrors.undo.current = { stack: [], group: null };
     setDraft(undefined);
     setCaret(0);
     if (next !== undefined) setStatus(next);
@@ -547,6 +646,7 @@ export function RewriteScene(props) {
     const at = chars.length;
     const rows = layoutEditorRows(target.original, editorTextWidth);
     const max = Math.max(0, rows.length - editRows);
+    mirrors.undo.current = { stack: [], group: null };
     writeCaret(at);
     writeDraft(target.original);
     // Start with the caret centred rather than at the very bottom: the last
@@ -568,53 +668,54 @@ export function RewriteScene(props) {
       const move = writeCaret;
 
       if (key.escape) { leaveEdit(current => (current === '' ? tr('edit-cancelled') : current)); return; }
+      if (key.ctrl && !key.shift && typeof input === 'string' && input.toLowerCase() === 'z') {
+        undoEdit();
+        return;
+      }
       if (key.ctrl && input === 's') { submit(); return; }
       if (key.leftArrow) { move(Math.max(0, cursor - 1)); return; }
       if (key.rightArrow) { move(Math.min(chars.length, cursor + 1)); return; }
+      // Up/Down walk DISPLAY rows, not logical lines: in a soft-wrapped
+      // sentence one press moves one visual line and keeps the column, which
+      // is what every other editor does. Home/End stay on the logical line.
       if (key.upArrow) {
-        const start = lineStartOf(chars, cursor);
-        if (start === 0) { move(0); return; }
-        const column = cursor - start;
-        const prevStart = lineStartOf(chars, start - 1);
-        move(Math.min(prevStart + column, start - 1));
+        const rows = layoutEditorRows(mirrors.draft.current ?? '', editorTextWidth);
+        move(verticalCaretTarget(rows, chars, cursor, -1));
         return;
       }
       if (key.downArrow) {
-        const start = lineStartOf(chars, cursor);
-        const column = cursor - start;
-        let end = cursor;
-        while (end < chars.length && chars[end] !== '\n') end += 1;
-        if (end >= chars.length) { move(chars.length); return; }
-        const nextStart = end + 1;
-        let nextEnd = nextStart;
-        while (nextEnd < chars.length && chars[nextEnd] !== '\n') nextEnd += 1;
-        move(Math.min(nextStart + column, nextEnd));
+        const rows = layoutEditorRows(mirrors.draft.current ?? '', editorTextWidth);
+        move(verticalCaretTarget(rows, chars, cursor, 1));
         return;
       }
       // Home/End move within the LINE, not the buffer: the editor is a
       // multi-line one and the host names the keys `key.home`/`key.end`.
-      // They land on the line's terminator, which is the cursor position
-      // Up/Down already clamp to, so End then Down moves straight down.
       if (key.home) { move(lineStartOf(chars, cursor)); return; }
       if (key.end) { move(lineEndOf(chars, cursor)); return; }
       if (key.return || input === '\n' || input === '\r') {
-        writeDraft([...chars.slice(0, cursor), '\n', ...chars.slice(cursor)].join(''));
-        move(cursor + 1);
+        recordEdit([...chars.slice(0, cursor), '\n', ...chars.slice(cursor)].join(''), cursor + 1, 'newline');
         return;
       }
       if (key.backspace || key.delete) {
         if (cursor === 0) return;
-        writeDraft([...chars.slice(0, cursor - 1), ...chars.slice(cursor)].join(''));
-        move(cursor - 1);
+        recordEdit(
+          [...chars.slice(0, cursor - 1), ...chars.slice(cursor)].join(''),
+          cursor - 1,
+          key.backspace ? 'backspace' : 'delete',
+        );
         return;
       }
       if (key.ctrl || key.meta || key.super) return;
       if (input === undefined || input === '') return;
       // A paste arrives as ONE multi-character input; insert it whole, or the
-      // rest of the pasted text is silently dropped.
+      // rest of the pasted text is silently dropped. A single character is
+      // ordinary typing, so it may fold into the current word's undo step.
       const pasted = units(input);
-      writeDraft([...chars.slice(0, cursor), ...pasted, ...chars.slice(cursor)].join(''));
-      move(cursor + pasted.length);
+      recordEdit(
+        [...chars.slice(0, cursor), ...pasted, ...chars.slice(cursor)].join(''),
+        cursor + pasted.length,
+        pasted.length > 1 ? 'paste' : 'insert',
+      );
       return;
     }
 
