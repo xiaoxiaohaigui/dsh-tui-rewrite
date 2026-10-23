@@ -715,6 +715,29 @@ test('Up/Down walk display rows of a soft-wrapped line and keep the column', () 
   assert.equal(verticalCaretTarget(rows, chars, 10, 1), 10, 'below the last row goes to the buffer end');
 });
 
+test('Up from a blank line lands on the last display row of the paragraph above', async () => {
+  const width = 94;
+  const text = 'L01' + 'A'.repeat(width - 3) + 'L02' + 'A'.repeat(width - 3) + '\n';
+  const session = await sessionWithReplies([text]);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  runtime.render({ sessionId: 's1' });
+  press(runtime, '', { return: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 2\/2, col 1/u, 'the caret starts on the empty line');
+
+  press(runtime, '', { upArrow: true });
+  const up = runtime.render({ sessionId: 's1' });
+  assert.match(up.text, /line 1\/2, col 95/u, 'one row up is the start of the paragraph\'s last display row');
+  const rows = editorLineTexts(up);
+  assert.match(rows[1], /▏L02/u, 'the caret is painted on the SECOND display row, not the first');
+  assert.doesNotMatch(rows[0], /▏/u, 'the first display row must not steal the caret');
+
+  press(runtime, '', { upArrow: true });
+  const top = runtime.render({ sessionId: 's1' });
+  assert.match(top.text, /line 1\/2, col 1/u);
+  assert.match(editorLineTexts(top)[0], /▏L01/u, 'one more row up reaches the first display row');
+});
+
 test('Up/Down move one display row in a wrapped message, not a logical line', async () => {
   const width = 94;
   const text = 'L01' + 'A'.repeat(width - 3) + 'L02' + 'A'.repeat(width - 3);
@@ -1082,6 +1105,7 @@ test('a caret maps onto the display rows produced by wrapping', () => {
   const chars = units(text);
 
   assert.equal(visualRowOfCaret(rows, 3), 0, 'a caret at the word break stays on the earlier row');
+  assert.equal(visualRowOfCaret(rows, 3, 1), 1, 'a row hint can put that shared boundary on the next row');
   assert.equal(visualRowOfCaret(rows, 4), 1);
   assert.equal(visualRowOfCaret(rows, 8), 1);
   assert.equal(visualColumnOfCaret(chars, rows, 0, 3), 3);

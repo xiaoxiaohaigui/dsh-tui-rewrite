@@ -302,8 +302,20 @@ export function layoutEditorRows(text, width) {
   return rows;
 }
 
-/** Index of the display row holding `caret`, or the last row. */
-export function visualRowOfCaret(rows, caret) {
+/**
+ * Index of the display row holding `caret`, or the last row.
+ *
+ * A soft-wrap boundary belongs to two rows on paper (the end of one and the
+ * start of the next). By default the caret stays on the earlier row, which is
+ * the host's rule; `hint` overrides that for a move that deliberately aimed at
+ * one row (vertical navigation, a click), so Up from a blank line lands on the
+ * LAST row of the previous paragraph instead of its first row.
+ */
+export function visualRowOfCaret(rows, caret, hint) {
+  if (hint !== undefined && hint >= 0 && hint < rows.length) {
+    const row = rows[hint];
+    if (caret >= row.start && caret <= row.end) return hint;
+  }
   for (let i = 0; i < rows.length; i += 1) if (caret <= rows[i].end) return i;
   return Math.max(0, rows.length - 1);
 }
@@ -324,8 +336,8 @@ export function visualColumnOfCaret(chars, rows, index, caret) {
  * Above the first row the caret goes to the buffer start; below the last row,
  * to its end.
  */
-export function verticalCaretTarget(rows, chars, caret, delta) {
-  const index = visualRowOfCaret(rows, caret);
+export function verticalCaretTarget(rows, chars, caret, delta, hint) {
+  const index = visualRowOfCaret(rows, caret, hint);
   const column = visualColumnOfCaret(chars, rows, index, caret);
   const target = index + delta;
   if (target < 0) return 0;
@@ -395,6 +407,9 @@ function makeMirrors() {
     draft: { current: undefined },
     caret: { current: 0 },
     targets: { current: [] },
+    // Display row the caret was last deliberately placed on. Only consulted
+    // at a soft-wrap boundary, where an offset belongs to two rows.
+    caretHint: { current: undefined },
     // Draft-scoped undo stack, in snapshot-before-edit form. `group` is the
     // currently open typing/deletion run, so a word folds into one Ctrl+Z.
     undo: { current: { stack: [], group: null } },
@@ -476,7 +491,9 @@ export function RewriteScene(props) {
   const draftFirst = draft === undefined ? 0 : Math.max(0, Math.min(editTop, maxEditTop));
   const draftLineStart = draft === undefined ? 0 : lineStartOf(draftChars, draftCaret);
   const draftColumn = draftCaret - draftLineStart;
-  const caretRowIndex = draft === undefined ? 0 : visualRowOfCaret(editorRows, draftCaret);
+  const caretRowIndex = draft === undefined
+    ? 0
+    : visualRowOfCaret(editorRows, draftCaret, mirrors.caretHint.current);
   const caretVisualColumn = 1 + (draft === undefined
     ? 0
     : visualColumnOfCaret(draftChars, editorRows, caretRowIndex, draftCaret));
@@ -524,6 +541,10 @@ export function RewriteScene(props) {
 
   const writeCaret = useCallback(at => {
     mirrors.caret.current = at;
+    // Any ordinary caret move drops the old row affinity; the operations that
+    // mean a specific display row (click, vertical move) set it again after
+    // this call.
+    mirrors.caretHint.current = undefined;
     setCaret(at);
   }, []);
 
@@ -590,6 +611,7 @@ export function RewriteScene(props) {
   const leaveEdit = useCallback(next => {
     mirrors.draft.current = undefined;
     mirrors.caret.current = 0;
+    mirrors.caretHint.current = undefined;
     // The undo stack belongs to this edit session; a later message must not
     // restore this one's text.
     mirrors.undo.current = { stack: [], group: null };
@@ -678,14 +700,15 @@ export function RewriteScene(props) {
       // Up/Down walk DISPLAY rows, not logical lines: in a soft-wrapped
       // sentence one press moves one visual line and keeps the column, which
       // is what every other editor does. Home/End stay on the logical line.
-      if (key.upArrow) {
+      if (key.upArrow || key.downArrow) {
+        const delta = key.upArrow ? -1 : 1;
         const rows = layoutEditorRows(mirrors.draft.current ?? '', editorTextWidth);
-        move(verticalCaretTarget(rows, chars, cursor, -1));
-        return;
-      }
-      if (key.downArrow) {
-        const rows = layoutEditorRows(mirrors.draft.current ?? '', editorTextWidth);
-        move(verticalCaretTarget(rows, chars, cursor, 1));
+        const hint = mirrors.caretHint.current;
+        const index = visualRowOfCaret(rows, cursor, hint);
+        // `move` clears the affinity; aim at the target row explicitly so a
+        // soft-wrap boundary displays on the row the move asked for.
+        move(verticalCaretTarget(rows, chars, cursor, delta, hint));
+        mirrors.caretHint.current = Math.max(0, Math.min(rows.length - 1, index + delta));
         return;
       }
       // Home/End move within the LINE, not the buffer: the editor is a
@@ -814,6 +837,9 @@ export function RewriteScene(props) {
               clicked.start
               + caretAtVisualColumn(units(clicked.text), innerColumn),
             );
+            // A click names its display row; keep the caret there even when the
+            // click landed on a soft-wrap boundary.
+            mirrors.caretHint.current = visualIndex;
           },
           children: visible.map((editorRow, offset) => {
             const absolute = first + offset;

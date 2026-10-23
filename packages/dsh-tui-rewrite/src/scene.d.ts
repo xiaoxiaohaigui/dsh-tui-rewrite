@@ -79,8 +79,11 @@ export declare function wrapEditorLine(chars: readonly string[], width: number):
 /** Lay a whole draft out as display rows with offsets into `text`. */
 export declare function layoutEditorRows(text: string, width: number): EditorRow[];
 
-/** Index of the display row holding `caret`, or the last row. */
-export declare function visualRowOfCaret(rows: readonly EditorRow[], caret: number): number;
+/**
+ * Index of the display row holding `caret`, or the last row. `hint` forces a
+ * row at a soft-wrap boundary, where one offset belongs to two rows.
+ */
+export declare function visualRowOfCaret(rows: readonly EditorRow[], caret: number, hint?: number): number;
 
 /** Display cells from the start of display row `index` to `caret`. */
 export declare function visualColumnOfCaret(chars: readonly string[], rows: readonly EditorRow[], index: number, caret: number): number;
@@ -89,7 +92,7 @@ export declare function visualColumnOfCaret(chars: readonly string[], rows: read
  * Caret offset one display row above/below, keeping the visual column. Used by
  * Up/Down so a soft-wrapped sentence moves one screen line at a time.
  */
-export declare function verticalCaretTarget(rows: readonly EditorRow[], chars: readonly string[], caret: number, delta: number): number;
+export declare function verticalCaretTarget(rows: readonly EditorRow[], chars: readonly string[], caret: number, delta: number, hint?: number): number;
 
 /** Signed rows one wheel notch asks for; 0 for a horizontal-only event. */
 export declare function wheelRows(deltaY: number, deltaX: number): number;
