@@ -16,12 +16,17 @@
  */
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   RewriteScene, SCENE_ID, setSessionResolver, setRewriteSubmitter, sessionFor, collectTargets, messageText,
   lineStartOf, lineEndOf, rowOf, caretAtVisualColumn, wrapEditorLine, layoutEditorRows,
-  visualRowOfCaret, visualColumnOfCaret, verticalCaretTarget, units, cellWidth, useMirrorRefs,
+  visualRowOfCaret, visualColumnOfCaret, verticalCaretTarget, units, textWidth, useMirrorRefs,
+  recordUndoStep, setUndoClock,
 } from 'dsh-tui-rewrite/scene';
 import { REWRITE_RECORD_TYPE } from 'dsh-tui-rewrite/persist';
+import { setLangFile, setLangOverride } from 'dsh-tui-rewrite/i18n';
 import { openSession, sessionWithReplies } from '../tools.mjs';
 
 // These assertions read the scene's copy, so pin the language contract to en
@@ -85,11 +90,21 @@ function findEditorBox(view) {
   return findEditorBox(node.props?.children);
 }
 
-/** Display cells in a string (the same width model the editor uses). */
+/** Display cells in a string, through the editor's own width model. */
 function cellsOf(text) {
-  let cells = 0;
-  for (const ch of text) cells += cellWidth(ch.codePointAt(0));
-  return cells;
+  return textWidth(text);
+}
+
+/** Elements carrying a ref callback (in this scene: the caret row's Text). */
+function refNodes(node, out = []) {
+  if (node === null || node === undefined || typeof node !== 'object') return out;
+  if (Array.isArray(node)) {
+    for (const child of node) refNodes(child, out);
+    return out;
+  }
+  if (typeof node.props?.ref === 'function') out.push(node);
+  refNodes(node.props?.children, out);
+  return out;
 }
 
 /** The painted text of each editor row, in screen order. */
@@ -666,7 +681,7 @@ test('Home and End move within the caret LINE, not the buffer', async () => {
   assert.match(caretLine(runtime.render({ sessionId: 's1' })), /▏DE/u);
 });
 
-test('End then Down keeps the column, because End lands on the terminator', async () => {
+test('End then Down keeps the visual column through the goal-column rule', async () => {
   const session = await sessionWithReplies(['ABCD\nXY\nZ']);
   setSessionResolver(() => session);
   const runtime = makeRenderer();
@@ -680,6 +695,8 @@ test('End then Down keeps the column, because End lands on the terminator', asyn
   press(runtime, '', { downArrow: true });
 
   // Landed in the SAME column on "XY" - at its end (column 3), not one short.
+  // End is a logical-line move; the column survives because Down takes the
+  // current visual column as its goal, not because the two keys share an offset.
   assert.equal(runtime.render({ sessionId: 's1' }).text.split('\n')[0], ' rewrite · editing seq 0  (line 2/3, col 3)');
   assert.match(caretLine(runtime.render({ sessionId: 's1' })), /XY▏/u);
 });
@@ -861,6 +878,125 @@ test('Ctrl+Z on an empty stack is a no-op and never clears the draft', async () 
   assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 6/u, 'the old stack is gone');
 });
 
+test('Ctrl+Z groups CJK typing by ICU word, not one character per press', async () => {
+  // R-023: the old hard rule returned a boundary at every CJK seam, so a
+  // Chinese sentence undid one character at a time. ICU's dictionary knows
+  // 你好 / 世界 are words, which is the host prompt editor's granularity.
+  const session = await sessionWithReplies(['AB']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  runtime.render({ sessionId: 's1' });
+  press(runtime, '', { return: true });
+
+  press(runtime, '你');
+  press(runtime, '好');
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 5/u);
+  press(runtime, 'z', { ctrl: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 3/u, 'both characters of 你好 are one step');
+
+  press(runtime, '世');
+  press(runtime, '界');
+  press(runtime, 'z', { ctrl: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 3/u, 'and 世界 is its own step');
+});
+
+test('a deletion run stops at the word it started in', async () => {
+  // R-023: the run used to fold on direction/caret/time alone, so holding
+  // Backspace through "three two one" made ONE undo step of it. The host
+  // bounds a run by the word interval of its first removed character.
+  const session = await sessionWithReplies(['one two three']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  runtime.render({ sessionId: 's1' });
+  press(runtime, '', { return: true });          // caret at the end (col 14)
+
+  for (let i = 0; i < 6; i += 1) press(runtime, '', { backspace: true });
+  // Five letters consumed "three", the sixth crossed the word boundary and
+  // started a new step for the trailing space.
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 8/u);
+  assert.match(runtime.render({ sessionId: 's1' }).text, /one two/u);
+
+  press(runtime, 'z', { ctrl: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 9/u, 'undo restores the space only');
+  assert.match(runtime.render({ sessionId: 's1' }).text, /one two /u);
+  press(runtime, 'z', { ctrl: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 14/u, 'the remaining word is the previous step');
+  assert.match(runtime.render({ sessionId: 's1' }).text, /one two three/u);
+});
+
+test('Delete removes at the caret, and its run is word-bounded too', async () => {
+  const session = await sessionWithReplies(['one two']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  runtime.render({ sessionId: 's1' });
+  press(runtime, '', { return: true });
+  press(runtime, '', { home: true });            // caret at line start
+  press(runtime, '', { delete: true });          // removes 'o'
+  press(runtime, '', { delete: true });          // removes 'n'
+  press(runtime, '', { delete: true });          // removes 'e'
+  press(runtime, '', { delete: true });          // crosses into the space: new step
+  assert.match(runtime.render({ sessionId: 's1' }).text, /two/u);
+  assert.match(runtime.render({ sessionId: 's1' }).text, /col 1/u);
+
+  press(runtime, 'z', { ctrl: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /▏ two/u, 'the space step restores the space only');
+  press(runtime, 'z', { ctrl: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /one two/u, 'the letters are the previous step');
+});
+
+test('the undo idle window is injectable and starts a new step at 700 ms', async () => {
+  // R-024b: proving the boundary used to require sleeping through it (or
+  // waiting for a real clock). The host keeps the same seam for its editor.
+  let now = 1000;
+  setUndoClock(() => now);
+  try {
+    const session = await sessionWithReplies(['HELLO']);
+    setSessionResolver(() => session);
+    const runtime = makeRenderer();
+    runtime.render({ sessionId: 's1' });
+    press(runtime, '', { return: true });
+
+    press(runtime, 'A');
+    now += 699;
+    press(runtime, 'B');
+    press(runtime, 'z', { ctrl: true });
+    assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 6/u, '699 ms still folds');
+
+    press(runtime, 'C');
+    now += 701;
+    press(runtime, 'D');
+    press(runtime, 'z', { ctrl: true });
+    assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 7/u, '701 ms starts a new step');
+    assert.match(runtime.render({ sessionId: 's1' }).text, /HELLOC/u);
+  } finally {
+    setUndoClock(undefined);
+  }
+});
+
+test('the undo store enforces its depth and character budgets', () => {
+  // R-024b: these limits are inline in the handler and a real 130-step draft
+  // test would render 130 times. recordUndoStep is the same code path.
+  const store = { stack: [], group: null };
+  for (let i = 0; i < 130; i += 1) {
+    recordUndoStep(store, {
+      before: 'x'.repeat(i),
+      beforeCaret: 0,
+      next: ' ' + 'x'.repeat(i),
+      nextCaret: 1,
+      kind: 'insert',
+      at: i,
+    });
+  }
+  assert.equal(store.stack.length, 100, 'the oldest 30 snapshots are dropped');
+  assert.equal(store.stack[0].text.length, 30, 'the stack keeps the most recent 100 steps');
+
+  const huge = 'a'.repeat(600000);
+  const big = { stack: [], group: null };
+  recordUndoStep(big, { before: huge, beforeCaret: 0, next: ' ' + huge, nextCaret: 1, kind: 'insert', at: 1 });
+  recordUndoStep(big, { before: ' ' + huge, beforeCaret: 0, next: '  ' + huge, nextCaret: 1, kind: 'insert', at: 2 });
+  assert.equal(big.stack.length, 1, 'a >1M-char stack drops its oldest snapshot');
+});
+
 test('a native cursor does not take a text cell from the editor', async () => {
   // The painted fallback inserts ▏ and shifts the line; the host native cursor
   // must instead be parked on the caret cell, leaving every character in place.
@@ -876,27 +1012,94 @@ test('a native cursor does not take a text cell from the editor', async () => {
   const atEnd = runtime.cursorDeclarations.at(-1);
   assert.equal(atEnd.active, true);
   assert.equal(atEnd.visible, true);
+  assert.equal(atEnd.line, 0, 'the declaration is relative to the caret row Text node');
   assert.equal(atEnd.column, 3, 'leading space + "CD"');
+  // The ref really sits on the caret row (line 0 of that node); a declaration
+  // with no attached node never reaches the renderer.
+  const refs = refNodes(view.tree);
+  assert.equal(refs.length, 1, 'exactly one node owns the declared cursor');
+  assert.ok(refs[0].props.children.startsWith(' '), 'the caret row carries the leading space');
+  assert.match(refs[0].props.children, /CD/u);
 
   press(runtime, '', { home: true });
-  runtime.render({ sessionId: 's1' });
+  const home = runtime.render({ sessionId: 's1' });
   assert.equal(runtime.cursorDeclarations.at(-1).column, 1);
+  assert.match(refNodes(home.tree)[0].props.children, /^ CD/u);
 });
 
-test('the scene copy follows the host language', async () => {
+test('the native cursor is withdrawn while the wheel keeps the caret row off screen', async () => {
+  // The declaration is anchored to a Text node; with the caret row scrolled
+  // away that node is not rendered, and leaving active=true would hold a
+  // stale target. The hook must clear instead.
+  const text = Array.from({ length: 30 }, (unused, index) => 'L' + String(index + 1).padStart(2, '0')).join('\n');
+  const session = await sessionWithReplies([text]);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer({ nativeCursor: true });
+  runtime.render({ sessionId: 's1' });
+  press(runtime, '', { return: true });
+  const view = runtime.render({ sessionId: 's1' });
+  assert.equal(runtime.cursorDeclarations.at(-1).active, true);
+  assert.equal(runtime.cursorDeclarations.at(-1).line, 0);
+  assert.match(refNodes(view.tree)[0].props.children, /L30/u, 'the caret row is the last line');
+
+  // Wheel the viewport up: the caret stays on row 30, which is now below the
+  // visible window.
+  findWheelBox(view.tree).props.onWheel({ deltaY: -3, deltaX: 0 });
+  const scrolled = runtime.render({ sessionId: 's1' });
+  assert.equal(runtime.cursorDeclarations.at(-1).active, false, 'no stale anchor off screen');
+  assert.equal(refNodes(scrolled.tree).length, 0, 'the caret row Text is not mounted');
+  assert.match(scrolled.text, /line 30\/30, col 4/u, 'the wheel did not move the caret');
+});
+
+test('the scene copy follows DSH_TUI_LANG, not the host channel lang', async () => {
+  // R-021: channel.configuredLang is the host's STATIC cordis `lang`. It does
+  // not follow /lang, and the host itself puts DSH_TUI_LANG above it at
+  // startup, so the scene must not let it win. This is the exact probe from
+  // the review: env=en + configuredLang=zh.
   const session = await sessionWithReplies(['HELLO']);
   setSessionResolver(() => session);
   const runtime = makeRenderer();
-  // The host's configured language outranks the env/file fallback.
   process.env.DSH_TUI_LANG = 'en';
   const channel = { sessionId: 's1', configuredLang: 'zh' };
   try {
-    assert.match(runtime.render(channel).text, /条助手回复/u);
-    assert.match(runtime.render(channel).text, /↑↓ 选择 · Enter 编辑 · Esc 关闭/u);
+    assert.match(runtime.render(channel).text, /1 assistant reply/u);
+    assert.match(runtime.render(channel).text, /↑↓ select · Enter edit · Esc close/u);
     press(runtime, '', { return: true });
-    assert.match(runtime.render(channel).text, /正在编辑/u);
+    assert.match(runtime.render(channel).text, /editing seq/u);
+    assert.doesNotMatch(runtime.render(channel).text, /正在编辑/u);
   } finally {
     process.env.DSH_TUI_LANG = 'en';
+  }
+});
+
+test('the scene follows the persisted /lang choice without an env pin', async () => {
+  // /lang writes ~/.dsh-tui/lang.json; the plugin resolves through the same
+  // file (a test seam points at a temp copy). This is the runtime hot-swap the
+  // old configuredLang-first path made impossible.
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-rewrite-lang-'));
+  const file = join(dir, 'lang.json');
+  const session = await sessionWithReplies(['HELLO']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  const previousEnv = process.env.DSH_TUI_LANG;
+  try {
+    delete process.env.DSH_TUI_LANG;
+    setLangOverride(undefined);
+    writeFileSync(file, JSON.stringify({ lang: 'zh' }));
+    setLangFile(file);
+    assert.match(runtime.render({ sessionId: 's1' }).text, /条助手回复/u);
+
+    // Rewrite the preference as /lang en would, then re-point the resolver so
+    // the one-second mtime probe does not make this test sleep.
+    writeFileSync(file, JSON.stringify({ lang: 'en' }));
+    setLangFile(file);
+    assert.match(runtime.render({ sessionId: 's1' }).text, /assistant reply/u);
+  } finally {
+    setLangFile(undefined);
+    setLangOverride(undefined);
+    if (previousEnv === undefined) delete process.env.DSH_TUI_LANG;
+    else process.env.DSH_TUI_LANG = previousEnv;
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -1121,6 +1324,14 @@ test('a click column maps through display cells, not code points', () => {
   assert.equal(caretAtVisualColumn(wide, 3), 2, 'right half of 😀');
   assert.equal(caretAtVisualColumn(wide, 4), 2, 'the Z cell places the caret before Z');
   assert.equal(caretAtVisualColumn(wide, 5), 3, 'one cell past Z places it after');
+
+  // R-020: a skin-tone emoji is ONE two-cell unit. Both halves map to its
+  // boundaries; neither can put the caret between 👍 and 🏽.
+  const toned = units('👍🏽X');
+  assert.equal(toned.length, 2, 'the emoji and X');
+  assert.equal(caretAtVisualColumn(toned, 0), 0, 'left half of the emoji');
+  assert.equal(caretAtVisualColumn(toned, 1), 1, 'right half lands after the WHOLE emoji');
+  assert.equal(caretAtVisualColumn(toned, 2), 1, 'the X cell is before X');
 });
 
 test('the editor soft-wraps long lines, word-aware and without splitting wide glyphs', () => {
@@ -1130,9 +1341,27 @@ test('the editor soft-wraps long lines, word-aware and without splitting wide gl
   assert.deepEqual(layoutEditorRows('aa bb cc', 5).map(row => row.text), ['aa ', 'bb cc'], 'break at the last space');
   assert.deepEqual(layoutEditorRows('中😀Z', 4).map(row => row.text), ['中😀', 'Z'], 'never split a wide glyph');
 
+  // R-020: clusters are never split by the wrap, even when they are several
+  // code points wide.
+  assert.deepEqual(layoutEditorRows('a👍🏽👍🏽', 4).map(row => row.text), ['a👍🏽', '👍🏽']);
+  assert.deepEqual(layoutEditorRows('👨‍👩‍👧‍👦x', 2).map(row => row.text), ['👨‍👩‍👧‍👦', 'x']);
+  // The review's ZWJ probe: 90 letters + a family emoji + x is 93 cells and
+  // must stay on one row instead of splitting the family into two halves.
+  assert.deepEqual(
+    layoutEditorRows('a'.repeat(90) + '👨‍👩‍👧‍👦x', 94).map(row => row.text),
+    ['a'.repeat(90) + '👨‍👩‍👧‍👦x'],
+  );
+  const mixed = ('a'.repeat(92) + '👍🏽👍🏽');
+  const mixedRows = layoutEditorRows(mixed, 94);
+  assert.deepEqual(mixedRows.map(row => row.text), ['a'.repeat(92) + '👍🏽', '👍🏽']);
+  assert.deepEqual(mixedRows.map(row => cellsOf(row.text)), [94, 2], 'every row fits the 94-cell budget');
+  // ✅ is two cells: 92 letters + two of them need two rows, not a truncated one.
+  const wideEmoji = layoutEditorRows('a'.repeat(92) + '✅✅', 94);
+  assert.deepEqual(wideEmoji.map(row => cellsOf(row.text)), [94, 2]);
+
   const rows = layoutEditorRows('a\nbb', 10);
   assert.deepEqual(rows.map(row => row.text), ['a', 'bb']);
-  assert.deepEqual(rows.map(row => [row.start, row.end]), [[0, 1], [2, 4]], 'offsets stay code-point positions in the draft');
+  assert.deepEqual(rows.map(row => [row.start, row.end]), [[0, 1], [2, 4]], 'offsets stay grapheme positions in the draft');
 });
 
 test('a caret maps onto the display rows produced by wrapping', () => {

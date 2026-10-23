@@ -17,8 +17,10 @@ dsh-tui 插件：允许用户**手动**改写会话历史中助手回复的文�
   profile row 的 `config.shortcut` 可以改入口，`off` 关闭全局快捷键。
 - 列表：`↑↓` 选择，`Enter` 或**点击某行**进入编辑，`Esc` 关闭；滚轮移动选中项。
 - 编辑：**点击文本**定位光标，`Ctrl+Z` 按词撤销，滚轮上下滚动（不移动光标）；长行自动软换行，`↑/↓` 一次移动一个显示行并尽量保持列，编辑框铺满终端。
-- 界面语言跟随 dsh-tui：宿主 `lang` 配置 → `DSH_TUI_LANG` → `~/.dsh-tui/lang.json` → 系统 locale；
-  插件 row 的 `config.lang` 可显式固定为 `zh` / `en`。
+- 界面语言与宿主同序：`DSH_TUI_LANG` → 插件 row 的 `config.lang` → `~/.dsh-tui/lang.json`
+  → 系统 locale（`zh*` 中文；其它显式 locale 或 `C` 英文；无 locale 时中文）→ 中文。
+  `/lang` 写入 lang.json，插件约一秒内跟随；插件不再读宿主 `channel.configuredLang`
+  （它是静态 cordis 配置，不随 `/lang` 变化，且会压过 `DSH_TUI_LANG`，与宿主启动顺序相反）。
 
 ## License
 

@@ -29,13 +29,25 @@ export declare function setRewriteSubmitter(submit: ((session: Session, data: Re
  */
 export declare function sessionFor(sessionId: unknown): Session | undefined;
 
-/** Code points, so astral characters edit as one unit. */
+/**
+ * Grapheme clusters (UAX #29), so a skin-tone/ZWJ emoji, a combining accent or
+ * a keycap sequence edits as one unit; '\n' is always its own unit.
+ */
 export declare function units(text: string): string[];
 
-/** Display cells a code point occupies: 2 for the wide ranges, else 1. */
+/**
+ * Display cells one code point occupies, following the host renderer's East
+ * Asian Width (ambiguous counted as narrow) and Emoji_Presentation rules.
+ */
 export declare function cellWidth(codePoint: number): number;
 
-/** Clip to a display-cell budget (CJK-safe), with an ellipsis when clipped. */
+/** Display cells one grapheme cluster occupies (emoji sequences are 2). */
+export declare function clusterWidth(cluster: string): number;
+
+/** Display cells of a whole string, measured by grapheme cluster. */
+export declare function textWidth(text: string): number;
+
+/** Clip to a display-cell budget, never splitting a cluster, with an ellipsis. */
 export declare function clipCells(text: string, budget: number): string;
 
 /** The message's own text, verbatim (what the editor starts from). */
@@ -48,8 +60,10 @@ export declare function previewOf(text: string): string;
 export declare function lineStartOf(chars: readonly string[], cursor: number): number;
 
 /**
- * Index of the line's terminator (or of the last unit on the last line) - the
- * cursor position Home/End and Up/Down share.
+ * Index of the line's terminator (or of the last unit on the last line): the
+ * Home/End target inside the current LOGICAL line. Up/Down use
+ * `verticalCaretTarget` and a goal column instead; they no longer share this
+ * offset, though End then Down still keeps the visual column.
  */
 export declare function lineEndOf(chars: readonly string[], cursor: number): number;
 
@@ -58,12 +72,12 @@ export declare function rowOf(chars: readonly string[], cursor: number): number;
 
 /**
  * Caret index a click at display column `visualColumn` targets. Display cells,
- * not code points: wide characters split at their midpoint, and a column past
- * the line end clamps to the end.
+ * not code points: a wide glyph or a multi-codepoint emoji splits at its
+ * midpoint, and a column past the line end clamps to the end.
  */
 export declare function caretAtVisualColumn(chars: readonly string[], visualColumn: number): number;
 
-/** One display row produced by soft-wrapping; offsets are code-point positions. */
+/** One display row produced by soft-wrapping; offsets are grapheme positions. */
 export interface EditorRow {
   start: number;
   end: number;
@@ -72,7 +86,8 @@ export interface EditorRow {
 
 /**
  * Break one logical line into display rows of at most `width` cells; word-aware,
- * with a hard break for a word that cannot fit.
+ * with a hard break for a word that cannot fit. A grapheme cluster is never
+ * split across rows.
  */
 export declare function wrapEditorLine(chars: readonly string[], width: number): { start: number; end: number }[];
 
@@ -96,6 +111,55 @@ export declare function verticalCaretTarget(rows: readonly EditorRow[], chars: r
 
 /** Signed rows one wheel notch asks for; 0 for a horizontal-only event. */
 export declare function wheelRows(deltaY: number, deltaX: number): number;
+
+/** One undo snapshot: the draft and caret BEFORE a step. */
+export interface UndoSnapshot {
+  text: string;
+  caret: number;
+}
+
+/**
+ * The draft-scoped undo state. `group` is the currently open typing/deletion
+ * run, or null when the next edit starts a new step.
+ */
+export interface UndoStore {
+  stack: UndoSnapshot[];
+  group: {
+    kind: string;
+    caretAfter: number;
+    atMs: number;
+    deleteRun: { wordStart: number; wordEnd: number; lo: number; hi: number } | null;
+  } | null;
+}
+
+/** Replace the undo clock (a test seam); `undefined` restores `Date.now`. */
+export declare function setUndoClock(clock: (() => number) | undefined): void;
+
+/**
+ * Record one text mutation: word-level insertion runs (ICU-backed, so CJK
+ * groups into words) and deletion runs bounded by the word they start in.
+ * Returns whether the step folded into the previous one.
+ */
+export declare function recordUndoStep(store: UndoStore, step: {
+  before: string;
+  beforeCaret: number;
+  next: string;
+  nextCaret: number;
+  kind: string;
+  at: number;
+}): boolean;
+
+/**
+ * Whether the seam at grapheme offset `offset` is a word boundary
+ * (`Intl.Segmenter` word granularity after the host's cheap hard rules).
+ */
+export declare function isWordBoundary(text: string, offset: number): boolean;
+
+/**
+ * The word interval `[start, end)` containing grapheme offset `index`, in
+ * grapheme offsets; non-word-like characters are their own interval.
+ */
+export declare function wordRangeAt(text: string, index: number): { start: number; end: number };
 
 /** One assistant reply the scene can rewrite. */
 export interface RewriteTarget {
@@ -136,6 +200,9 @@ export declare function useMirrorRefs(React: {
   draft: { current: string | undefined };
   caret: { current: number };
   targets: { current: RewriteTarget[] };
+  caretHint: { current: number | undefined };
+  desiredColumn: { current: number | undefined };
+  undo: { current: UndoStore };
 };
 
 /** The full-screen scene, rendered by the host with `TuiSceneProps`. */

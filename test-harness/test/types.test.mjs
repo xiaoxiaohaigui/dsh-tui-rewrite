@@ -22,6 +22,7 @@ const MODULES = [
   { specifier: 'dsh-tui-rewrite', declaration: 'main.d.ts' },
   { specifier: 'dsh-tui-rewrite/projection', declaration: 'projection.d.ts' },
   { specifier: 'dsh-tui-rewrite/scene', declaration: 'scene.d.ts' },
+  { specifier: 'dsh-tui-rewrite/i18n', declaration: 'i18n.d.ts' },
   { specifier: 'dsh-tui-rewrite/debug', declaration: 'debug.d.ts' },
   { specifier: 'dsh-tui-rewrite/seam', declaration: 'seam.d.ts' },
   { specifier: 'dsh-tui-rewrite/persist', declaration: 'persist.d.ts' },

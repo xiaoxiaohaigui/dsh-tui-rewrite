@@ -24,6 +24,7 @@ import { REWRITE_RECORD_TYPE } from 'dsh-tui-rewrite/persist';
 import { loadSampleSession, openSession, textOf } from '../tools.mjs';
 // eslint-disable-next-line no-duplicate-imports -- the row builder below needs it
 import { createPlugin } from 'dsh-tui-rewrite';
+import { setLangOverride } from 'dsh-tui-rewrite/i18n';
 
 const settle = (ms = 25) => new Promise(resolve => setTimeout(resolve, ms));
 // The default export IS the mounted plugin (name + inject + apply).
@@ -338,6 +339,50 @@ test('a host-reserved configured shortcut falls back to the default', async () =
   assert.deepEqual(registered, ['alt+r', 'alt+w']);
   assert.equal(projectionStatus(row).shortcut, true, 'the fallback is the live binding');
   await host.dispose();
+});
+
+test('shortcut: off registers no global chord at all', async () => {
+  // R-024a: 'off' is a documented value and must be a real no-op, not a
+  // failed registration that still reports an entry point.
+  const root = new Context();
+  root.plugin(SessionStore);
+  await settle();
+  const calls = [];
+  root.provide('tuiShortcuts', {
+    register(combo) { calls.push(combo); return () => {}; },
+    list() { return calls.map(combo => ({ combo })); },
+  });
+  const own = createPlugin({ shortcut: 'off', timers: { schedule: (fn) => setTimeout(fn, 0), cancel: clearTimeout, budgetMs: 200 } });
+  const host = root.plugin(own);
+  await settle(60);
+  assert.deepEqual(calls, []);
+  assert.equal(projectionStatus(own).shortcut, false);
+  await host.dispose();
+});
+
+test('a row config.lang pins the registered command copy', async () => {
+  // R-024a / R-021: the scene and the command description must resolve through
+  // the same chain; before, only the scene got the configured language.
+  const previous = process.env.DSH_TUI_LANG;
+  delete process.env.DSH_TUI_LANG;
+  const root = new Context();
+  root.plugin(SessionStore);
+  await settle();
+  const registered = [];
+  root.provide('commands', { register(definition) { registered.push(definition); return () => {}; } });
+  const own = createPlugin({ lang: 'zh', shortcut: 'off', timers: { schedule: (fn) => setTimeout(fn, 0), cancel: clearTimeout, budgetMs: 200 } });
+  const host = root.plugin(own);
+  try {
+    await settle(60);
+    assert.equal(registered.length, 1);
+    assert.match(registered[0].description, /改写助手回复/u);
+    assert.match(registered[0].input.hint, /无参数/u);
+  } finally {
+    await host.dispose();
+    setLangOverride(undefined);
+    if (previous === undefined) delete process.env.DSH_TUI_LANG;
+    else process.env.DSH_TUI_LANG = previous;
+  }
 });
 
 test('the scene resolver reaches the live session through the real store', async () => {

@@ -47,6 +47,16 @@ import { jsx, jsxs } from '@deepseek-harness-tui/dsh-tui/jsx-runtime';
 import { REWRITE_RECORD_TYPE } from './persist.js';
 import { debugLog } from './debug.js';
 import { t } from './i18n.js';
+import {
+  units, clusterWidth, clipCells, isWordBoundary, wordRangeAt,
+} from './text.js';
+
+// The text-unit helpers live in text.js (grapheme clusters, display width and
+// word boundaries); they are re-exported here because the editor's public
+// surface - and every test - reaches them through this module.
+export {
+  units, cellWidth, clusterWidth, textWidth, clipCells, isWordBoundary, wordRangeAt,
+} from './text.js';
 
 /** Scene id (kebab-case, per the tuiScenes grammar). */
 export const SCENE_ID = 'dsh-tui-rewrite-scene';
@@ -123,44 +133,6 @@ function writeRewrite(session, data) {
   return session.append(REWRITE_RECORD_TYPE, data);
 }
 
-/** Code points, so astral characters edit as one unit. */
-export function units(text) {
-  return Array.from(text);
-}
-
-/** Display cells a code point occupies: 2 for the wide ranges, else 1. */
-export function cellWidth(codePoint) {
-  if (codePoint >= 0x1100 && (
-    codePoint <= 0x115f
-    || (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f)
-    || (codePoint >= 0xac00 && codePoint <= 0xd7a3)
-    || (codePoint >= 0xf900 && codePoint <= 0xfaff)
-    || (codePoint >= 0xfe10 && codePoint <= 0xfe19)
-    || (codePoint >= 0xfe30 && codePoint <= 0xfe6f)
-    || (codePoint >= 0xff00 && codePoint <= 0xff60)
-    || (codePoint >= 0xffe0 && codePoint <= 0xffe6)
-    || (codePoint >= 0x1f300 && codePoint <= 0x1f64f)
-    || (codePoint >= 0x1f680 && codePoint <= 0x1f6ff)
-    || (codePoint >= 0x1f900 && codePoint <= 0x1f9ff)
-    || (codePoint >= 0x1fa70 && codePoint <= 0x1faff)
-    || (codePoint >= 0x20000 && codePoint <= 0x3fffd)
-  )) return 2;
-  return 1;
-}
-
-/** Clip to a display-cell budget (CJK-safe), with an ellipsis when clipped. */
-export function clipCells(text, budget) {
-  let used = 0;
-  let out = '';
-  for (const ch of text) {
-    const w = cellWidth(ch.codePointAt(0));
-    if (used + w > budget) return out + '…';
-    out += ch;
-    used += w;
-  }
-  return out;
-}
-
 /**
  * The message's own text, verbatim (what the editor starts from).
  *
@@ -198,9 +170,13 @@ export function lineStartOf(chars, cursor) {
 
 /**
  * Index of the line's terminator (or of the last unit when it is the last
- * line), i.e. the cursor position Home/End and Up/Down share. That sharing is
- * the point: End then Down lands in the SAME column as Up/Down would, instead
- * of one column short.
+ * line): the Home/End target inside the current LOGICAL line.
+ *
+ * Up/Down no longer share this offset: they walk display rows through
+ * `verticalCaretTarget` and keep a goal column, so a wrapped line moves one
+ * screen row per press. End then Down still lands in the same visual column
+ * because the terminator's offset projects to the line's end column - that is
+ * the goal-column rule, not a shared terminator.
  */
 export function lineEndOf(chars, cursor) {
   let i = Math.max(0, Math.min(cursor, chars.length));
@@ -231,7 +207,7 @@ export function caretAtVisualColumn(chars, visualColumn) {
   if (!Number.isFinite(visualColumn) || visualColumn <= 0) return 0;
   let cells = 0;
   for (let i = 0; i < chars.length; i += 1) {
-    const width = cellWidth(chars[i].codePointAt(0));
+    const width = clusterWidth(chars[i]);
     if (visualColumn < cells + width) {
       return visualColumn - cells >= width / 2 ? i + 1 : i;
     }
@@ -258,13 +234,13 @@ export function wrapEditorLine(chars, width) {
   let rowWidth = 0;
   let lastBreak = -1;
   for (let i = 0; i < chars.length; i += 1) {
-    const cell = cellWidth(chars[i].codePointAt(0));
+    const cell = clusterWidth(chars[i]);
     while (rowWidth + cell > width && i > rowStart) {
       if (lastBreak > rowStart) {
         rows.push({ start: rowStart, end: lastBreak });
         rowStart = lastBreak;
         rowWidth = 0;
-        for (let j = rowStart; j < i; j += 1) rowWidth += cellWidth(chars[j].codePointAt(0));
+        for (let j = rowStart; j < i; j += 1) rowWidth += clusterWidth(chars[j]);
         lastBreak = -1;
       } else {
         rows.push({ start: rowStart, end: i });
@@ -325,7 +301,7 @@ export function visualColumnOfCaret(chars, rows, index, caret) {
   const row = rows[index] ?? { start: 0, end: 0 };
   let cells = 0;
   const stop = Math.max(row.start, Math.min(caret, row.end));
-  for (let i = row.start; i < stop; i += 1) cells += cellWidth(chars[i].codePointAt(0));
+  for (let i = row.start; i < stop; i += 1) cells += clusterWidth(chars[i]);
   return cells;
 }
 
@@ -346,29 +322,6 @@ export function verticalCaretTarget(rows, chars, caret, delta, hint, goalColumn)
   if (target >= rows.length) return chars.length;
   const row = rows[target];
   return row.start + caretAtVisualColumn(units(row.text), column);
-}
-
-/**
- * Whether the caret seam in `text` is a word boundary (used to end an undo
- * typing run). Cheap approximation of the host's ICU rule: edges, whitespace,
- * punctuation, script/CJK changes and digit/letter changes break a word.
- */
-function wordBoundaryAt(text, offset) {
-  const chars = units(text);
-  if (offset <= 0 || offset >= chars.length) return true;
-  const left = chars[offset - 1];
-  const right = chars[offset];
-  const word = /[\p{L}\p{N}]/u;
-  if (!word.test(left) || !word.test(right)) return true;
-  if (/\s/u.test(left) || /\s/u.test(right)) return true;
-  const cjk = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
-  if (cjk.test(left) || cjk.test(right)) return true;
-  const digit = /\p{N}/u;
-  if (digit.test(left) !== digit.test(right)) return true;
-  // Any script other than Latin ends the run at every character; for Latin,
-  // letters (including accents) keep folding into the same word.
-  const latin = /\p{Script=Latin}/u;
-  return !latin.test(left) || !latin.test(right);
 }
 
 /**
@@ -429,6 +382,105 @@ export function wheelRows(deltaY, deltaX) {
 }
 
 /**
+ * The clock an undo run is timed against. A TEST SEAM: the host's own draft
+ * editor explicitly keeps the idle window injectable so a suite can prove the
+ * 700 ms boundary without sleeping, and this plugin follows that rule.
+ *
+ * @type {() => number}
+ */
+let undoNow = () => Date.now();
+
+/**
+ * Replace the undo clock (a test seam); `undefined` restores `Date.now`.
+ *
+ * @param {(() => number) | undefined} clock
+ */
+export function setUndoClock(clock) {
+  undoNow = typeof clock === 'function' ? clock : () => Date.now();
+}
+
+/** Drop snapshots beyond the depth/character budget, oldest first. */
+function trimUndo(store) {
+  while (store.stack.length > UNDO_LIMIT) store.stack.shift();
+  // Memory guard: a few huge drafts must not pin tens of megabytes.
+  let chars = store.stack.reduce((total, entry) => total + entry.text.length, 0);
+  while (chars > UNDO_MAX_CHARS && store.stack.length > 1) {
+    chars -= store.stack.shift().text.length;
+  }
+}
+
+/**
+ * Record one text mutation in the draft's undo store.
+ *
+ * A run folds into the previous step when the same direction continues at the
+ * same caret within {@link UNDO_IDLE_MS}, and:
+ *
+ * - for an insertion, the seam stays inside an ICU word (`Intl.Segmenter`,
+ *   so CJK typing groups like the host's prompt editor - "你好" is one step,
+ *   not one per character);
+ * - for a deletion, the run stays inside the word interval the FIRST removed
+ *   character belonged to. A fast run of Backspaces therefore restores one
+ *   word, not the whole sentence, and a run that crosses into the previous
+ *   word starts a new step.
+ *
+ * Returned for tests: the preceding snapshot is pushed only when the step does
+ * not fold.
+ *
+ * @param {{stack: {text: string, caret: number}[], group: unknown}} store
+ * @param {{before: string, beforeCaret: number, next: string, nextCaret: number, kind: string, at: number}} step
+ * @returns {boolean} whether the step folded into the previous one.
+ */
+export function recordUndoStep(store, step) {
+  const { before, beforeCaret, next, nextCaret, kind, at } = step;
+  const last = store.group;
+  const continues = last !== null
+    && last !== undefined
+    && last.kind === kind
+    && at - last.atMs <= UNDO_IDLE_MS
+    && last.caretAfter === beforeCaret;
+  let fold = false;
+  if (continues && kind === 'insert') {
+    fold = !isWordBoundary(next, beforeCaret);
+  } else if (continues && (kind === 'backspace' || kind === 'delete')) {
+    const run = last.deleteRun;
+    if (run !== null && run !== undefined) {
+      if (kind === 'backspace') {
+        const lo = run.lo - 1;
+        if (lo >= 0 && lo >= run.wordStart) {
+          run.lo = lo;
+          fold = true;
+        }
+      } else {
+        const hi = run.hi + 1;
+        if (hi <= units(before).length && hi <= run.wordEnd) {
+          run.hi = hi;
+          fold = true;
+        }
+      }
+    }
+  }
+  if (fold) {
+    last.atMs = at;
+    last.caretAfter = nextCaret;
+    store.group = last;
+    return true;
+  }
+  store.stack.push({ text: before, caret: beforeCaret });
+  trimUndo(store);
+  let deleteRun = null;
+  if (kind === 'backspace' || kind === 'delete') {
+    // The interval is recorded in the coordinates of the text the run starts
+    // in: a backward run only moves left (indices after the seam are stable),
+    // a forward run only moves right (indices before it are stable).
+    const start = kind === 'backspace' ? beforeCaret - 1 : beforeCaret;
+    const word = wordRangeAt(before, start);
+    deleteRun = { wordStart: word.start, wordEnd: word.end, lo: start, hi: start + 1 };
+  }
+  store.group = { kind, caretAfter: nextCaret, atMs: at, deleteRun };
+  return false;
+}
+
+/**
  * The full-screen scene. Every hook and element comes from the injected host
  * React: a plugin-owned React copy dies with invalid-hook-call on first render.
  *
@@ -442,9 +494,13 @@ export function RewriteScene(props) {
   // Read per render, not captured: a session switch under an open scene must
   // rebind the list instead of editing the session it was opened on.
   const session = sessionFor(channel?.sessionId);
-  // The host's deployment language wins for the scene copy when it sets one;
-  // otherwise t() follows DSH_TUI_LANG / ~/.dsh-tui/lang.json / OS locale.
-  const tr = (key, params) => t(key, params, channel?.configuredLang);
+  // The scene does NOT read channel.configuredLang: that value is the host's
+  // static cordis `lang`, it does not follow a runtime /lang switch, and it
+  // outranks DSH_TUI_LANG here even though the host itself puts the env first.
+  // t() owns the whole contract (env -> plugin row config -> lang.json ->
+  // locale -> zh), so the scene and the registered command descriptions always
+  // resolve through one chain. Stable identity: t() reads the language live.
+  const tr = useCallback((key, params) => t(key, params), []);
 
   const [targets, setTargets] = useState(() => collectTargets(session));
   const [selected, setSelected] = useState(0);
@@ -502,11 +558,18 @@ export function RewriteScene(props) {
   const caretVisualColumn = 1 + (draft === undefined
     ? 0
     : visualColumnOfCaret(draftChars, editorRows, caretRowIndex, draftCaret));
+  // The declared cursor is anchored to a line's Text node. When the wheel has
+  // scrolled the caret row out of the viewport there is no such node, and the
+  // host would otherwise keep a stale declaration with no target; withdraw it
+  // instead (the fallback glyph is not painted while nativeCursor is on).
+  const caretVisible = draft !== undefined
+    && caretRowIndex >= draftFirst
+    && caretRowIndex < draftFirst + editRows;
   const cursorRef = typeof useDeclaredCursor === 'function'
     ? useDeclaredCursor({
       line: 0,
       column: caretVisualColumn,
-      active: draft !== undefined,
+      active: caretVisible,
       visible: nativeCursor,
     })
     : undefined;
@@ -562,35 +625,20 @@ export function RewriteScene(props) {
   /**
    * Apply one text mutation, recording an undo snapshot first.
    *
-   * A run folds into the previous step when the same direction continues at
-   * the same caret within {@link UNDO_IDLE_MS}, and - for an insertion - the
-   * seam stays inside a word. That is the host prompt editor's word-level
-   * granularity: Ctrl+Z drops "world", not the whole sentence and not one
-   * keystroke. A newline or a paste always starts a sealed step.
+   * The grouping rules live in {@link recordUndoStep} (word-level, ICU-backed
+   * for CJK; deletion runs bounded by the word they start in). A newline or a
+   * paste always starts a sealed step. The clock is injectable so the 700 ms
+   * boundary is testable without sleeping.
    */
   const recordEdit = useCallback((next, nextCaret, kind) => {
-    const before = mirrors.draft.current ?? '';
-    const beforeCaret = mirrors.caret.current ?? 0;
-    const store = mirrors.undo.current;
-    const at = Date.now();
-    const last = store.group;
-    const continues = last !== null
-      && last.kind === kind
-      && at - last.atMs <= UNDO_IDLE_MS
-      && last.caretAfter === beforeCaret;
-    const fold = kind === 'insert'
-      ? continues && !wordBoundaryAt(next, beforeCaret)
-      : (kind === 'backspace' || kind === 'delete') && continues;
-    if (!fold) {
-      store.stack.push({ text: before, caret: beforeCaret });
-      while (store.stack.length > UNDO_LIMIT) store.stack.shift();
-      // Memory guard: a few huge drafts must not pin tens of megabytes.
-      let chars = store.stack.reduce((total, entry) => total + entry.text.length, 0);
-      while (chars > UNDO_MAX_CHARS && store.stack.length > 1) {
-        chars -= store.stack.shift().text.length;
-      }
-    }
-    store.group = { kind, caretAfter: nextCaret, atMs: at };
+    recordUndoStep(mirrors.undo.current, {
+      before: mirrors.draft.current ?? '',
+      beforeCaret: mirrors.caret.current ?? 0,
+      next,
+      nextCaret,
+      kind,
+      at: undoNow(),
+    });
     writeDraft(next);
     writeCaret(nextCaret);
   }, [mirrors, writeDraft, writeCaret]);
@@ -667,7 +715,7 @@ export function RewriteScene(props) {
       debugLog('append threw', { targetSeq: target.seq, error: String(error) });
       leaveEdit(tr('edit-append-failed', { error: String(error).slice(0, 70) }));
     }
-  }, [session, leaveEdit, writeTargets]);
+  }, [session, leaveEdit, writeTargets, tr]);
 
   const beginEdit = useCallback(target => {
     if (target === undefined) return;
@@ -733,13 +781,25 @@ export function RewriteScene(props) {
         recordEdit([...chars.slice(0, cursor), '\n', ...chars.slice(cursor)].join(''), cursor + 1, 'newline');
         return;
       }
+      // Backspace removes the cluster BEFORE the caret; Delete removes the one
+      // AT it. Both directions are real edits, and the undo run must know which
+      // way it is walking (see recordUndoStep).
       if (key.backspace || key.delete) {
-        if (cursor === 0) return;
-        recordEdit(
-          [...chars.slice(0, cursor - 1), ...chars.slice(cursor)].join(''),
-          cursor - 1,
-          key.backspace ? 'backspace' : 'delete',
-        );
+        if (key.delete && cursor < chars.length) {
+          recordEdit(
+            [...chars.slice(0, cursor), ...chars.slice(cursor + 1)].join(''),
+            cursor,
+            'delete',
+          );
+          return;
+        }
+        if (key.backspace && cursor > 0) {
+          recordEdit(
+            [...chars.slice(0, cursor - 1), ...chars.slice(cursor)].join(''),
+            cursor - 1,
+            'backspace',
+          );
+        }
         return;
       }
       if (key.ctrl || key.meta || key.super) return;

@@ -26,6 +26,10 @@
       "types": "./src/scene.d.ts",
       "default": "./src/scene.js"
     },
+    "./i18n": {
+      "types": "./src/i18n.d.ts",
+      "default": "./src/i18n.js"
+    },
     "./debug": {
       "types": "./src/debug.d.ts",
       "default": "./src/debug.js"

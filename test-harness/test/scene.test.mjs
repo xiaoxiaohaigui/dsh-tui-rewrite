@@ -8,13 +8,23 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  cellWidth, clipCells, messageText, previewOf, units,
+  cellWidth, clusterWidth, textWidth, clipCells, messageText, previewOf, units,
   lineStartOf, lineEndOf, rowOf, wheelRows, collectTargets,
+  isWordBoundary, wordRangeAt,
 } from 'dsh-tui-rewrite/scene';
 
-test('units splits by code point so astral characters edit as one', () => {
+test('units splits by grapheme cluster, so one glyph edits as one unit', () => {
   assert.equal(units('a\nb').length, 3);
   assert.equal(units('👍!').length, 2);
+  // R-020: code points would split every one of these into several units.
+  assert.equal(units('👍🏽').length, 1, 'skin-tone modifier stays with its emoji');
+  assert.equal(units('👨‍👩‍👧‍👦').length, 1, 'ZWJ family is one glyph');
+  assert.equal(units('e\u0301').length, 1, 'combining accent is one glyph');
+  assert.equal(units('1️⃣').length, 1, 'keycap sequence is one glyph');
+  assert.equal(units('🇨🇳').length, 1, 'flag pair is one glyph');
+  // Newlines stay their own unit even for CRLF input.
+  assert.deepEqual(units('a\r\nb'), ['a', '\r', '\n', 'b']);
+  assert.deepEqual(units(''), []);
 });
 
 test('cellWidth gives CJK and emoji two cells', () => {
@@ -22,6 +32,63 @@ test('cellWidth gives CJK and emoji two cells', () => {
   assert.equal(cellWidth('你'.codePointAt(0)), 2);
   assert.equal(cellWidth('（'.codePointAt(0)), 2);
   assert.equal(cellWidth('👍'.codePointAt(0)), 2);
+  // R-020: these are Emoji_Presentation symbols even though a caseless range
+  // check used to call them narrow.
+  assert.equal(cellWidth('✅'.codePointAt(0)), 2);
+  assert.equal(cellWidth('⚡'.codePointAt(0)), 2);
+  assert.equal(cellWidth('⏰'.codePointAt(0)), 2);
+  assert.equal(cellWidth('⌛'.codePointAt(0)), 2);
+  // A text-default symbol without VS16 renders narrow (the host's rule).
+  assert.equal(cellWidth('⚠'.codePointAt(0)), 1);
+  assert.equal(cellWidth('❤'.codePointAt(0)), 1);
+});
+
+test('textWidth measures grapheme clusters, not code points', () => {
+  assert.equal(clusterWidth('👍🏽'), 2, 'skin tone adds no cells');
+  assert.equal(textWidth('👍🏽👍🏽'), 4);
+  assert.equal(clusterWidth('👨‍👩‍👧‍👦'), 2, 'a ZWJ family is one two-cell glyph');
+  assert.equal(textWidth('👨‍👩‍👧‍👦x'), 3);
+  assert.equal(textWidth('🇨🇳'), 2);
+  assert.equal(textWidth('🇨'), 1, 'a lone regional indicator is narrow');
+  assert.equal(textWidth('1️⃣'), 2, 'keycap sequence');
+  assert.equal(textWidth('1️'), 1, 'digit + VS16 without U+20E3 is incomplete');
+  assert.equal(textWidth('e\u0301'), 1, 'combining mark adds no cells');
+  assert.equal(textWidth('❤'), 1);
+  assert.equal(textWidth('❤️'), 2, 'VS16 forces emoji presentation');
+  assert.equal(textWidth('中文 a'), 6);
+  // A Devanagari virama+ZWJ conjunct uses the same U+200D but is not an emoji
+  // sequence: it renders as one narrow glyph.
+  assert.equal(clusterWidth('\u0915\u094d\u200d\u0937'), 1);
+  assert.equal(textWidth(''), 0);
+});
+
+test('clipCells never splits a grapheme cluster', () => {
+  // "a" + one 2-cell emoji exactly fills 3 cells; the remaining b is what
+  // triggers the ellipsis, not a split glyph.
+  assert.equal(clipCells('a👍🏽b', 3), 'a👍🏽…');
+  assert.equal(clipCells('a👍🏽', 3), 'a👍🏽');
+  // One cell short: the emoji does not fit, so it is replaced by the ellipsis
+  // rather than being cut in half.
+  assert.equal(clipCells('a👍🏽b', 2), 'a…');
+  assert.equal(clipCells('👨‍👩‍👧‍👦', 2), '👨‍👩‍👧‍👦');
+  assert.equal(clipCells('👨‍👩‍👧‍👦x', 2), '👨‍👩‍👧‍👦…');
+});
+
+test('word seams follow ICU words, including CJK', () => {
+  // Latin: inside a word vs after it.
+  assert.equal(isWordBoundary('hello', 2), false);
+  assert.equal(isWordBoundary('hello world', 5), true, 'a space is a boundary');
+  // CJK: 你好 is one ICU word, 世界 another - so typing folds per word instead
+  // of per character (R-023).
+  assert.equal(isWordBoundary('你好世界', 1), false);
+  assert.equal(isWordBoundary('你好世界', 2), true);
+  assert.equal(isWordBoundary('', 0), true);
+  assert.equal(isWordBoundary('abc', 3), true);
+
+  assert.deepEqual(wordRangeAt('hello world', 6), { start: 6, end: 11 });
+  assert.deepEqual(wordRangeAt('hello world', 5), { start: 5, end: 6 }, 'the space is its own interval');
+  assert.deepEqual(wordRangeAt('你好世界', 1), { start: 0, end: 2 }, 'the ICU segment 你好');
+  assert.deepEqual(wordRangeAt('👍🏽x', 0), { start: 0, end: 1 }, 'non-word-like cluster');
 });
 
 test('clipCells budgets in cells, not characters, and marks the cut', () => {
@@ -60,7 +127,7 @@ test('lineStartOf finds the first unit of the caret line', () => {
 
 test('lineEndOf finds the line terminator, and clamps a stale caret', () => {
   const chars = units('ab\ncd\nef');
-  assert.equal(lineEndOf(chars, 0), 2, 'the terminator itself, so End + Down keeps the column');
+  assert.equal(lineEndOf(chars, 0), 2, 'the terminator itself, which is the line\'s end column');
   assert.equal(lineEndOf(chars, 2), 2, 'ending exactly on the newline stays there');
   assert.equal(lineEndOf(chars, 4), 5);
   assert.equal(lineEndOf(chars, 5), 5);

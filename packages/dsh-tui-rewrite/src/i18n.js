@@ -1,12 +1,25 @@
 /**
  * Plugin copy, zh/en, following the host's language contract WITHOUT importing
- * it: config lang -> DSH_TUI_LANG -> ~/.dsh-tui/lang.json (mtime-cached) ->
- * OS locale -> zh. A /lang switch therefore hot-swaps this plugin's strings on
- * the next render, exactly like the host's own screens.
+ * it:
  *
- * The resolver is copied from the host's published contract (the same order
- * dsh-tui-find uses) because the TUI does not expose its i18n module through
- * the plugin surface; the scene only receives React/ui/channel/close.
+ *   1. `DSH_TUI_LANG` - pinned at process start, wins over every config
+ *   2. the plugin row's `config.lang` (an explicit plugin-level pin)
+ *   3. `~/.dsh-tui/lang.json` - the persisted `/lang` choice (mtime-cached)
+ *   4. the OS locale (`LC_ALL` / `LC_MESSAGES` / `LANG`)
+ *   5. `zh` - the host's original hard-coded language
+ *
+ * This is the host's own order with the plugin row standing in for the host's
+ * cordis `lang`: the TUI does not expose its i18n module (or its in-memory
+ * `setLang`), and the scene only receives React/ui/channel/close. A runtime
+ * `/lang` writes lang.json, so the file probe is what hot-swaps this plugin's
+ * strings - including the next launch's default.
+ *
+ * The OS-locale rule is the host's `detectLocaleLang` exactly: an explicit
+ * non-zh locale maps to en (a German user must not get a Chinese UI), C/POSIX
+ * counts as explicit and maps to en, and only an ABSENT locale keeps zh.
+ * `LANGUAGE` and `Intl` are deliberately not consulted - the host does not
+ * read them either, and disagreeing there is how the two halves of one screen
+ * end up in different languages.
  *
  * @module dsh-tui-rewrite/i18n
  */
@@ -15,7 +28,8 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 /** The dsh-tui preference file this plugin mirrors. */
-const LANG_FILE = join(homedir(), '.dsh-tui', 'lang.json');
+const DEFAULT_LANG_FILE = join(homedir(), '.dsh-tui', 'lang.json');
+let langFile = DEFAULT_LANG_FILE;
 /** A statSync per t() call would be a syscall on every keystroke; one probe a second is enough for /lang. */
 const FILE_PROBE_INTERVAL_MS = 1000;
 
@@ -28,9 +42,23 @@ function parseLang(value) {
   return value === 'zh' || value === 'en' ? value : undefined;
 }
 
-/** Pin the language (plugin config or a test); undefined reverts to auto. */
+/** Pin the language (plugin row config or a test); undefined reverts to auto. */
 export function setLangOverride(lang) {
   override = parseLang(lang);
+}
+
+/**
+ * Point the resolver at another preference file (a test seam). `undefined`
+ * restores `~/.dsh-tui/lang.json`; either way the mtime cache is reset so the
+ * next call reads the new file instead of a stale probe.
+ *
+ * @param {string | undefined} path
+ */
+export function setLangFile(path) {
+  langFile = path ?? DEFAULT_LANG_FILE;
+  cachedFileLang = undefined;
+  cachedFileMtime = 0;
+  lastProbeAt = 0;
 }
 
 function fileLang() {
@@ -38,11 +66,11 @@ function fileLang() {
   if (now - lastProbeAt < FILE_PROBE_INTERVAL_MS) return cachedFileLang;
   lastProbeAt = now;
   try {
-    const mtime = statSync(LANG_FILE).mtimeMs;
+    const mtime = statSync(langFile).mtimeMs;
     if (mtime !== cachedFileMtime) {
       cachedFileMtime = mtime;
       try {
-        const parsed = JSON.parse(readFileSync(LANG_FILE, 'utf8'));
+        const parsed = JSON.parse(readFileSync(langFile, 'utf8'));
         cachedFileLang = parseLang(parsed?.lang);
       } catch {
         cachedFileLang = undefined;
@@ -54,22 +82,24 @@ function fileLang() {
   return cachedFileLang;
 }
 
+/**
+ * The host's `detectLocaleLang`: `||` (not `??`) so an EMPTY variable means
+ * "unset" and falls through; only the language tag before the first dot counts;
+ * no locale at all keeps zh; every other stated locale maps to en.
+ */
 function localeLang() {
-  const raw = process.env.LC_ALL ?? process.env.LC_MESSAGES ?? process.env.LANG ?? process.env.LANGUAGE ?? '';
-  const lower = raw.toLowerCase();
-  if (lower.startsWith('zh')) return 'zh';
-  if (lower.startsWith('en')) return 'en';
-  try {
-    const locale = Intl.DateTimeFormat().resolvedOptions().locale.toLowerCase();
-    if (locale.startsWith('zh')) return 'zh';
-    if (locale.startsWith('en')) return 'en';
-  } catch { /* an exotic ICU build must not break the scene */ }
-  return undefined;
+  const raw = process.env.LC_ALL
+    || process.env.LC_MESSAGES
+    || process.env.LANG
+    || '';
+  const locale = raw.split('.')[0]?.toLowerCase() ?? '';
+  if (locale === '') return 'zh';
+  return locale.startsWith('zh') ? 'zh' : 'en';
 }
 
-/** The currently effective language, read live. */
+/** The currently effective language, read live (see the module comment). */
 export function getLang() {
-  return override ?? parseLang(process.env.DSH_TUI_LANG) ?? fileLang() ?? localeLang() ?? 'zh';
+  return parseLang(process.env.DSH_TUI_LANG) ?? override ?? fileLang() ?? localeLang() ?? 'zh';
 }
 
 /** Flat key -> per-language text. Missing keys render the key itself (visible typo, not a blank). */
@@ -142,9 +172,9 @@ function substitute(template, params) {
  * @param {string} key - dictionary key.
  * @param {Record<string, string | number>} [params] - {{name}} placeholders.
  */
-export function t(key, params, lang) {
+export function t(key, params) {
   const entry = dict[key];
   if (entry === undefined) return key;
-  const active = parseLang(lang) ?? getLang();
+  const active = getLang();
   return substitute(entry[active] ?? entry.en, params);
 }
