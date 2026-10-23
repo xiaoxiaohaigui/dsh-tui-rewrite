@@ -336,9 +336,11 @@ export function visualColumnOfCaret(chars, rows, index, caret) {
  * Above the first row the caret goes to the buffer start; below the last row,
  * to its end.
  */
-export function verticalCaretTarget(rows, chars, caret, delta, hint) {
+export function verticalCaretTarget(rows, chars, caret, delta, hint, goalColumn) {
   const index = visualRowOfCaret(rows, caret, hint);
-  const column = visualColumnOfCaret(chars, rows, index, caret);
+  const column = goalColumn === undefined
+    ? visualColumnOfCaret(chars, rows, index, caret)
+    : goalColumn;
   const target = index + delta;
   if (target < 0) return 0;
   if (target >= rows.length) return chars.length;
@@ -410,6 +412,9 @@ function makeMirrors() {
     // Display row the caret was last deliberately placed on. Only consulted
     // at a soft-wrap boundary, where an offset belongs to two rows.
     caretHint: { current: undefined },
+    // Sticky display column for a vertical run. Short/blank rows clamp the
+    // caret, but the next longer row must return to this column.
+    desiredColumn: { current: undefined },
     // Draft-scoped undo stack, in snapshot-before-edit form. `group` is the
     // currently open typing/deletion run, so a word folds into one Ctrl+Z.
     undo: { current: { stack: [], group: null } },
@@ -541,10 +546,11 @@ export function RewriteScene(props) {
 
   const writeCaret = useCallback(at => {
     mirrors.caret.current = at;
-    // Any ordinary caret move drops the old row affinity; the operations that
-    // mean a specific display row (click, vertical move) set it again after
-    // this call.
+    // Any ordinary caret move drops the old row affinity and goal column; the
+    // operations that mean a specific display row (click, vertical move) set
+    // them again after this call.
     mirrors.caretHint.current = undefined;
+    mirrors.desiredColumn.current = undefined;
     setCaret(at);
   }, []);
 
@@ -612,6 +618,7 @@ export function RewriteScene(props) {
     mirrors.draft.current = undefined;
     mirrors.caret.current = 0;
     mirrors.caretHint.current = undefined;
+    mirrors.desiredColumn.current = undefined;
     // The undo stack belongs to this edit session; a later message must not
     // restore this one's text.
     mirrors.undo.current = { stack: [], group: null };
@@ -705,10 +712,17 @@ export function RewriteScene(props) {
         const rows = layoutEditorRows(mirrors.draft.current ?? '', editorTextWidth);
         const hint = mirrors.caretHint.current;
         const index = visualRowOfCaret(rows, cursor, hint);
-        // `move` clears the affinity; aim at the target row explicitly so a
-        // soft-wrap boundary displays on the row the move asked for.
-        move(verticalCaretTarget(rows, chars, cursor, delta, hint));
-        mirrors.caretHint.current = Math.max(0, Math.min(rows.length - 1, index + delta));
+        // A vertical run keeps its goal column. A blank or short row clamps the
+        // caret for this step, but the next longer row must return to the
+        // column the run started in - otherwise one empty line pins the caret
+        // to column 0 for the rest of the walk.
+        const goal = mirrors.desiredColumn.current
+          ?? visualColumnOfCaret(chars, rows, index, cursor);
+        // `move` clears the affinity and goal; aim at the target row explicitly.
+        move(verticalCaretTarget(rows, chars, cursor, delta, hint, goal));
+        const targetRow = Math.max(0, Math.min(rows.length - 1, index + delta));
+        mirrors.caretHint.current = targetRow;
+        mirrors.desiredColumn.current = goal;
         return;
       }
       // Home/End move within the LINE, not the buffer: the editor is a

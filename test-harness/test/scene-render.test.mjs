@@ -715,6 +715,39 @@ test('Up/Down walk display rows of a soft-wrapped line and keep the column', () 
   assert.equal(verticalCaretTarget(rows, chars, 10, 1), 10, 'below the last row goes to the buffer end');
 });
 
+test('a vertical run keeps its goal column across a blank line', async () => {
+  // Two 10-cell lines with an empty line between them. Starting at the end of
+  // the last line (column 11), Up must pass through the empty line without
+  // losing the goal column, and Down must return to column 11.
+  const session = await sessionWithReplies(['abcdefghij\n\nklmnopqrst']);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  runtime.render({ sessionId: 's1' });
+  press(runtime, '', { return: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 3\/3, col 11/u);
+
+  press(runtime, '', { upArrow: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 2\/3, col 1/u, 'the empty line clamps the caret');
+  press(runtime, '', { upArrow: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/3, col 11/u, 'the goal column survives the empty line');
+
+  press(runtime, '', { downArrow: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 2\/3, col 1/u);
+  press(runtime, '', { downArrow: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 3\/3, col 11/u, 'and comes back on the other side');
+
+  // A horizontal move ends the run: the next vertical walk starts from the new
+  // column instead of the old goal.
+  press(runtime, '', { upArrow: true });
+  press(runtime, '', { upArrow: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/3, col 11/u);
+  press(runtime, '', { leftArrow: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/3, col 10/u);
+  press(runtime, '', { downArrow: true });
+  press(runtime, '', { downArrow: true });
+  assert.match(runtime.render({ sessionId: 's1' }).text, /line 3\/3, col 10/u, 'Left reset the goal column');
+});
+
 test('Up from a blank line lands on the last display row of the paragraph above', async () => {
   const width = 94;
   const text = 'L01' + 'A'.repeat(width - 3) + 'L02' + 'A'.repeat(width - 3) + '\n';
@@ -752,6 +785,9 @@ test('Up/Down move one display row in a wrapped message, not a logical line', as
   assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 95/u, 'one row up: end of the first display row');
   press(runtime, '', { upArrow: true });
   assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 1/u, 'above the first row goes to the buffer start');
+  // The vertical run still aims at the old goal column at the buffer edge, so
+  // Home is the explicit way to restart the walk from column 0.
+  press(runtime, '', { home: true });
   press(runtime, '', { downArrow: true });
   assert.match(runtime.render({ sessionId: 's1' }).text, /line 1\/1, col 95/u, 'one row down: start of the second display row');
   press(runtime, '', { downArrow: true });

@@ -92,7 +92,7 @@ export declare function visualColumnOfCaret(chars: readonly string[], rows: read
  * Caret offset one display row above/below, keeping the visual column. Used by
  * Up/Down so a soft-wrapped sentence moves one screen line at a time.
  */
-export declare function verticalCaretTarget(rows: readonly EditorRow[], chars: readonly string[], caret: number, delta: number, hint?: number): number;
+export declare function verticalCaretTarget(rows: readonly EditorRow[], chars: readonly string[], caret: number, delta: number, hint?: number, goalColumn?: number): number;
 
 /** Signed rows one wheel notch asks for; 0 for a horizontal-only event. */
 export declare function wheelRows(deltaY: number, deltaX: number): number;
