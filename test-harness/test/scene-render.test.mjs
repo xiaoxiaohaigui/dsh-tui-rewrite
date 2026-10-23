@@ -18,7 +18,8 @@ import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   RewriteScene, SCENE_ID, setSessionResolver, setRewriteSubmitter, sessionFor, collectTargets, messageText,
-  lineStartOf, lineEndOf, rowOf, caretAtVisualColumn, units, useMirrorRefs,
+  lineStartOf, lineEndOf, rowOf, caretAtVisualColumn, wrapEditorLine, layoutEditorRows,
+  visualRowOfCaret, visualColumnOfCaret, units, cellWidth, useMirrorRefs,
 } from 'dsh-tui-rewrite/scene';
 import { REWRITE_RECORD_TYPE } from 'dsh-tui-rewrite/persist';
 import { openSession, sessionWithReplies } from '../tools.mjs';
@@ -82,6 +83,13 @@ function findEditorBox(view) {
   }
   if (node.props?.borderStyle === 'round' && typeof node.props?.onClick === 'function') return node;
   return findEditorBox(node.props?.children);
+}
+
+/** Display cells in a string (the same width model the editor uses). */
+function cellsOf(text) {
+  let cells = 0;
+  for (const ch of text) cells += cellWidth(ch.codePointAt(0));
+  return cells;
 }
 
 /** The painted text of each editor row, in screen order. */
@@ -955,6 +963,76 @@ test('a click column maps through display cells, not code points', () => {
   assert.equal(caretAtVisualColumn(wide, 3), 2, 'right half of 😀');
   assert.equal(caretAtVisualColumn(wide, 4), 2, 'the Z cell places the caret before Z');
   assert.equal(caretAtVisualColumn(wide, 5), 3, 'one cell past Z places it after');
+});
+
+test('the editor soft-wraps long lines, word-aware and without splitting wide glyphs', () => {
+  assert.deepEqual(layoutEditorRows('', 10).map(row => row.text), [''], 'empty text still has one caret row');
+  assert.deepEqual(layoutEditorRows('abc', 10).map(row => row.text), ['abc']);
+  assert.deepEqual(layoutEditorRows('abcdefghij', 4).map(row => row.text), ['abcd', 'efgh', 'ij']);
+  assert.deepEqual(layoutEditorRows('aa bb cc', 5).map(row => row.text), ['aa ', 'bb cc'], 'break at the last space');
+  assert.deepEqual(layoutEditorRows('中😀Z', 4).map(row => row.text), ['中😀', 'Z'], 'never split a wide glyph');
+
+  const rows = layoutEditorRows('a\nbb', 10);
+  assert.deepEqual(rows.map(row => row.text), ['a', 'bb']);
+  assert.deepEqual(rows.map(row => [row.start, row.end]), [[0, 1], [2, 4]], 'offsets stay code-point positions in the draft');
+});
+
+test('a caret maps onto the display rows produced by wrapping', () => {
+  const text = 'aa bb cc';
+  const rows = layoutEditorRows(text, 5);
+  const chars = units(text);
+
+  assert.equal(visualRowOfCaret(rows, 3), 0, 'a caret at the word break stays on the earlier row');
+  assert.equal(visualRowOfCaret(rows, 4), 1);
+  assert.equal(visualRowOfCaret(rows, 8), 1);
+  assert.equal(visualColumnOfCaret(chars, rows, 0, 3), 3);
+  assert.equal(visualColumnOfCaret(chars, rows, 1, 8), 5);
+
+  const wide = layoutEditorRows('中😀Z', 4);
+  assert.equal(visualRowOfCaret(wide, 2), 0);
+  assert.equal(visualRowOfCaret(wide, 3), 1);
+  assert.equal(visualColumnOfCaret(units('中😀Z'), wide, 0, 2), 4);
+});
+
+test('a long single line wraps into rows and the wheel scrolls them', async () => {
+  // 30 chunks of exactly the editor text width, each with a marker, so every
+  // DISPLAY row is one chunk. This is one logical line: before the wrap-aware
+  // viewport it overflowed the box as a single enormous row.
+  const width = 94; // the test terminal is 100 columns; the box leaves 6 cells
+  const text = Array.from({ length: 30 }, (unused, index) => (
+    'L' + String(index + 1).padStart(2, '0') + 'A'.repeat(width - 3)
+  )).join('');
+  const session = await sessionWithReplies([text]);
+  setSessionResolver(() => session);
+  const runtime = makeRenderer();
+  runtime.render({ sessionId: 's1' });
+  press(runtime, '', { return: true });
+  const view = runtime.render({ sessionId: 's1' });
+
+  assert.match(view.text, /line 1\/1, col 2821/u, 'the title still reports the LOGICAL line/column');
+  assert.equal(view.tree.props.height, 24);
+  const rows = editorLineTexts(view);
+  assert.equal(rows.length, 19, 'one logical line now fills the viewport with display rows');
+  assert.match(rows[0], /L12/u, 'entry lands on the last page, as before');
+  for (const line of rows) {
+    assert.ok(cellsOf(line) <= 96, 'no painted row may exceed the box content width');
+  }
+
+  findWheelBox(view.tree).props.onWheel({ deltaY: -3, deltaX: 0 });
+  const up = runtime.render({ sessionId: 's1' });
+  assert.match(editorLineTexts(up)[0], /L09/u, 'one notch moves three display rows');
+  assert.match(up.text, /line 1\/1, col 2821/u, 'the wheel does not move the caret');
+
+  // Click the first visible row: row 8 of the wrapped line, cell 1.
+  findEditorBox(up).props.onClick({ localRow: 1, localCol: 4 });
+  const clicked = runtime.render({ sessionId: 's1' });
+  assert.match(clicked.text, /line 1\/1, col 754/u, 'click maps through the scrolled display row');
+  assert.match(editorLineTexts(clicked)[0], /L▏?09/u, 'the caret is painted on the clicked row');
+
+  findWheelBox(clicked.tree).props.onWheel({ deltaY: 3, deltaX: 0 });
+  const down = runtime.render({ sessionId: 's1' });
+  assert.match(editorLineTexts(down)[0], /L12/u, 'the view scrolls back');
+  assert.match(down.text, /line 1\/1, col 754/u, 'and the caret stays on the clicked display row');
 });
 
 test('the editor fills the terminal, and its wheel scrolls the view without the caret', async () => {

@@ -63,6 +63,28 @@ export declare function rowOf(chars: readonly string[], cursor: number): number;
  */
 export declare function caretAtVisualColumn(chars: readonly string[], visualColumn: number): number;
 
+/** One display row produced by soft-wrapping; offsets are code-point positions. */
+export interface EditorRow {
+  start: number;
+  end: number;
+  text: string;
+}
+
+/**
+ * Break one logical line into display rows of at most `width` cells; word-aware,
+ * with a hard break for a word that cannot fit.
+ */
+export declare function wrapEditorLine(chars: readonly string[], width: number): { start: number; end: number }[];
+
+/** Lay a whole draft out as display rows with offsets into `text`. */
+export declare function layoutEditorRows(text: string, width: number): EditorRow[];
+
+/** Index of the display row holding `caret`, or the last row. */
+export declare function visualRowOfCaret(rows: readonly EditorRow[], caret: number): number;
+
+/** Display cells from the start of display row `index` to `caret`. */
+export declare function visualColumnOfCaret(chars: readonly string[], rows: readonly EditorRow[], index: number, caret: number): number;
+
 /** Signed rows one wheel notch asks for; 0 for a horizontal-only event. */
 export declare function wheelRows(deltaY: number, deltaX: number): number;
 

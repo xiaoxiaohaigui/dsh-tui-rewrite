@@ -237,6 +237,83 @@ export function caretAtVisualColumn(chars, visualColumn) {
 }
 
 /**
+ * Break one logical line into display rows of at most `width` cells.
+ *
+ * Word-aware, like the host's prompt editor: prefer the last space, and hard-
+ * break a word that cannot fit. Ranges are code-point offsets into `chars`.
+ * A wide character is never split; `width` is clamped to 2 by the caller so a
+ * two-cell glyph always fits on a row of its own.
+ *
+ * The trailing space of a word break stays on the earlier row, which is also
+ * where a caret at the break sits (the same rule the prompt editor uses).
+ */
+export function wrapEditorLine(chars, width) {
+  if (chars.length === 0) return [{ start: 0, end: 0 }];
+  const rows = [];
+  let rowStart = 0;
+  let rowWidth = 0;
+  let lastBreak = -1;
+  for (let i = 0; i < chars.length; i += 1) {
+    const cell = cellWidth(chars[i].codePointAt(0));
+    while (rowWidth + cell > width && i > rowStart) {
+      if (lastBreak > rowStart) {
+        rows.push({ start: rowStart, end: lastBreak });
+        rowStart = lastBreak;
+        rowWidth = 0;
+        for (let j = rowStart; j < i; j += 1) rowWidth += cellWidth(chars[j].codePointAt(0));
+        lastBreak = -1;
+      } else {
+        rows.push({ start: rowStart, end: i });
+        rowStart = i;
+        rowWidth = 0;
+        lastBreak = -1;
+      }
+    }
+    rowWidth += cell;
+    if (chars[i] === ' ') lastBreak = i + 1;
+  }
+  rows.push({ start: rowStart, end: chars.length });
+  return rows;
+}
+
+/**
+ * Lay a whole draft out as display rows. Offsets (`start`/`end`) are code-point
+ * positions in `text`, so a click or caret can be mapped in either direction.
+ * Empty text still yields one row, so an empty editor has a caret cell.
+ */
+export function layoutEditorRows(text, width) {
+  const rows = [];
+  let base = 0;
+  for (const line of text.split('\n')) {
+    const chars = units(line);
+    for (const row of wrapEditorLine(chars, width)) {
+      rows.push({
+        start: base + row.start,
+        end: base + row.end,
+        text: chars.slice(row.start, row.end).join(''),
+      });
+    }
+    base += chars.length + 1;
+  }
+  return rows;
+}
+
+/** Index of the display row holding `caret`, or the last row. */
+export function visualRowOfCaret(rows, caret) {
+  for (let i = 0; i < rows.length; i += 1) if (caret <= rows[i].end) return i;
+  return Math.max(0, rows.length - 1);
+}
+
+/** Display cells from the start of display row `index` to `caret`. */
+export function visualColumnOfCaret(chars, rows, index, caret) {
+  const row = rows[index] ?? { start: 0, end: 0 };
+  let cells = 0;
+  const stop = Math.max(row.start, Math.min(caret, row.end));
+  for (let i = row.start; i < stop; i += 1) cells += cellWidth(chars[i].codePointAt(0));
+  return cells;
+}
+
+/**
  * Create the synchronous mirrors the input handler reads.
  *
  * A stdin chunk can deliver several keys before React re-renders, so a handler
@@ -321,11 +398,16 @@ export function RewriteScene(props) {
   const mirrors = useMirrorRefs(React);
 
   const terminalRows = Math.max(6, size.rows ?? 24);
+  const terminalColumns = Math.max(8, size.columns ?? 80);
   const bodyRows = Math.max(1, terminalRows - 5);
   // Title + hint + status take three rows; the bordered box adds its two border
   // rows on top of the text rows. Filling the terminal is what makes the editor
   // usable for long replies instead of a four-row slit.
   const editRows = Math.max(1, terminalRows - 5);
+  // Display cells available inside one painted line: the box's two borders, its
+  // two padding cells and the line's leading space are not text. One more cell
+  // is reserved on every row so the caret's trailing blank fits at EOL.
+  const editorTextWidth = Math.max(2, terminalColumns - 6);
 
   // The editor caret must not consume a text cell: inserting a ▏ glyph shifts
   // every character to its right, which is what made the editor look like it
@@ -339,29 +421,22 @@ export function RewriteScene(props) {
   const draftCaret = Math.min(caret, draftChars.length);
   const draftRow = draft === undefined ? 0 : rowOf(draftChars, draftCaret);
   const draftLines = draft === undefined ? [] : draft.split('\n');
-  const maxEditTop = draft === undefined ? 0 : Math.max(0, draftLines.length - editRows);
+  // The editor renders DISPLAY rows (soft-wrapped at the box width), not
+  // logical lines: a long reply is one logical line but many screen rows. The
+  // viewport, the wheel, the caret and click mapping all speak display rows.
+  const editorRows = draft === undefined ? [] : layoutEditorRows(draft, editorTextWidth);
+  const maxEditTop = draft === undefined ? 0 : Math.max(0, editorRows.length - editRows);
   const draftFirst = draft === undefined ? 0 : Math.max(0, Math.min(editTop, maxEditTop));
-  // Code-point offset where each rendered line starts. Click mapping needs the
-  // line's start, not a linear scan to it on every render.
-  const draftLineStarts = [];
-  if (draft !== undefined) {
-    let start = 0;
-    for (const line of draftLines) {
-      draftLineStarts.push(start);
-      start += units(line).length + 1;
-    }
-  }
   const draftLineStart = draft === undefined ? 0 : lineStartOf(draftChars, draftCaret);
   const draftColumn = draftCaret - draftLineStart;
-  const draftLineChars = draft === undefined ? [] : units(draftLines[draftRow] ?? '');
-  let draftVisualColumn = 1; // the leading space is part of the rendered line
-  for (let i = 0; i < Math.min(draftColumn, draftLineChars.length); i += 1) {
-    draftVisualColumn += cellWidth(draftLineChars[i].codePointAt(0));
-  }
+  const caretRowIndex = draft === undefined ? 0 : visualRowOfCaret(editorRows, draftCaret);
+  const caretVisualColumn = 1 + (draft === undefined
+    ? 0
+    : visualColumnOfCaret(draftChars, editorRows, caretRowIndex, draftCaret));
   const cursorRef = typeof useDeclaredCursor === 'function'
     ? useDeclaredCursor({
       line: 0,
-      column: draftVisualColumn,
+      column: caretVisualColumn,
       active: draft !== undefined,
       visible: nativeCursor,
     })
@@ -470,16 +545,17 @@ export function RewriteScene(props) {
     if (target === undefined) return;
     const chars = units(target.original);
     const at = chars.length;
-    const lines = target.original.split('\n');
-    const max = Math.max(0, lines.length - editRows);
+    const rows = layoutEditorRows(target.original, editorTextWidth);
+    const max = Math.max(0, rows.length - editRows);
     writeCaret(at);
     writeDraft(target.original);
     // Start with the caret centred rather than at the very bottom: the last
-    // lines of a long reply are usually the interesting ones, and the user can
+    // rows of a long reply are usually the interesting ones, and the user can
     // still wheel or arrow from there.
-    setEditTop(Math.max(0, Math.min(max, rowOf(chars, at) - Math.floor(editRows / 2))));
+    const caretRow = visualRowOfCaret(rows, at);
+    setEditTop(Math.max(0, Math.min(max, caretRow - Math.floor(editRows / 2))));
     setStatus('');
-  }, [writeCaret, writeDraft, editRows]);
+  }, [writeCaret, writeDraft, editRows, editorTextWidth]);
 
   useInput((input, key) => {
     // The draft mirror IS the mode switch: it is written by the same statement
@@ -568,13 +644,13 @@ export function RewriteScene(props) {
   useEffect(() => {
     if (draft === undefined) return;
     setEditTop(top => {
-      const max = Math.max(0, draftLines.length - editRows);
+      const max = Math.max(0, editorRows.length - editRows);
       let next = Math.max(0, Math.min(top, max));
-      if (draftRow < next) next = draftRow;
-      else if (draftRow >= next + editRows) next = Math.min(max, draftRow - editRows + 1);
+      if (caretRowIndex < next) next = caretRowIndex;
+      else if (caretRowIndex >= next + editRows) next = Math.min(max, caretRowIndex - editRows + 1);
       return next;
     });
-  }, [draft, draftRow, editRows, draftLines.length]);
+  }, [draft, caret, caretRowIndex, editRows, editorRows.length]);
 
   if (session === undefined) {
     // Reachable in three honest situations: the composition has no session
@@ -597,7 +673,7 @@ export function RewriteScene(props) {
     const column = draftColumn;
     const lines = draftLines;
     const first = draftFirst;
-    const visible = lines.slice(first, first + editRows);
+    const visible = editorRows.slice(first, first + editRows);
     const target = targets[selected];
     return jsxs(Box, {
       flexDirection: 'column',
@@ -625,29 +701,33 @@ export function RewriteScene(props) {
             const innerRow = event.localRow - 1;
             const innerColumn = event.localCol - EDIT_TEXT_OFFSET;
             if (innerRow < 0 || innerRow >= editRows || innerColumn < 0) return;
-            const lineIndex = first + innerRow;
-            // Below the last line: the end of the buffer is where clicking the
-            // blank tail of an editor usually puts the caret.
-            if (lineIndex >= lines.length) {
+            const visualIndex = first + innerRow;
+            // Below the last display row: the end of the buffer is where
+            // clicking the blank tail of an editor usually puts the caret.
+            if (visualIndex >= editorRows.length) {
               writeCaret(draftChars.length);
               return;
             }
+            const clicked = editorRows[visualIndex];
             writeCaret(
-              draftLineStarts[lineIndex]
-              + caretAtVisualColumn(units(lines[lineIndex]), innerColumn),
+              clicked.start
+              + caretAtVisualColumn(units(clicked.text), innerColumn),
             );
           },
-          children: visible.map((line, offset) => {
+          children: visible.map((editorRow, offset) => {
             const absolute = first + offset;
-            if (absolute === row) {
+            const painted = editorRow.text.length === 0 ? ' ' : editorRow.text;
+            if (absolute === caretRowIndex) {
               if (paintedCaret) {
                 // Host without a declared native cursor: keep the caret visible,
                 // accepting the one-cell shift (the pre-2026-10-22 behaviour).
-                const lineChars = units(line);
-                const before = lineChars.slice(0, column).join('');
-                const after = lineChars.slice(column).join('');
+                const rowChars = units(editorRow.text);
+                const local = Math.max(0, Math.min(draftCaret - editorRow.start, rowChars.length));
+                const before = rowChars.slice(0, local).join('');
+                const after = rowChars.slice(local).join('');
                 return jsx(Text, {
                   key: 'line-' + absolute,
+                  wrap: 'truncate-end',
                   color: 'suggestion',
                   children: ' ' + before + '▏' + after,
                 });
@@ -655,14 +735,16 @@ export function RewriteScene(props) {
               return jsx(Text, {
                 key: 'line-' + absolute,
                 ref: cursorRef,
+                wrap: 'truncate-end',
                 color: 'suggestion',
                 // The trailing blank is the cell the native cursor parks on at EOL.
-                children: ' ' + (line.length === 0 ? ' ' : line) + ' ',
+                children: ' ' + painted + ' ',
               });
             }
             return jsx(Text, {
               key: 'line-' + absolute,
-              children: ' ' + (line.length === 0 ? ' ' : line),
+              wrap: 'truncate-end',
+              children: ' ' + painted,
             });
           }),
         }),
