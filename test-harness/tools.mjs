@@ -62,10 +62,17 @@ export function requirePath(path, label, variable) {
 }
 
 /**
- * The default sample session: a real, mid-size log from this machine.
- * Override with DSH_REWRITE_SAMPLE when it moves.
+ * The default sample session: a real, mid-size log from this machine, resolved
+ * under the same DSH_HOME the rest of the harness uses. Override with
+ * DSH_REWRITE_SAMPLE when it moves.
  */
-export const DEFAULT_SAMPLE = 'C:/Users/86198/.dsh/sessions/--D-dsh-tui-theme--/74b50eef-dad8-4731-b8cb-f85cafac74ce/session.v4.jsonl.zstd';
+export const DEFAULT_SAMPLE = join(
+  process.env.DSH_HOME ?? join(homedir(), '.dsh'),
+  'sessions',
+  '--D-dsh-tui-theme--',
+  '74b50eef-dad8-4731-b8cb-f85cafac74ce',
+  'session.v4.jsonl.zstd',
+);
 
 /** Resolve the sample path, failing loudly with the override hint. */
 export function samplePath(explicit) {
